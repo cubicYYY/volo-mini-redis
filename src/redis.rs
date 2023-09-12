@@ -33,7 +33,7 @@ impl Redis {
 
     fn expired(ts: Option<Timestamp>) -> bool {
         if let Some(ts) = ts {
-            ts > Self::now()
+            Self::now() > ts
         } else {
             false
         }
@@ -53,23 +53,18 @@ impl Redis {
     }
 
     // `exp_after`: milliseconds, 0 means never
-    pub fn set(&mut self, key: &str, value: &str, exp_after: u128) -> bool {
-        if self.kvs.contains_key(key) {
-            self.kvs.insert(
-                key.to_string(),
-                TimedValue {
-                    value: value.to_string(),
-                    expired_at: if exp_after == 0 {
-                        None
-                    } else {
-                        Some(Self::now() + exp_after)
-                    },
+    pub fn set(&mut self, key: &str, value: &str, exp_after: u128) {
+        self.kvs.insert(
+            key.to_string(),
+            TimedValue {
+                value: value.to_string(),
+                expired_at: if exp_after == 0 {
+                    None
+                } else {
+                    Some(Self::now() + exp_after)
                 },
-            );
-            true
-        } else {
-            false
-        }
+            },
+        );
     }
 
     pub fn del(&mut self, key: &str) -> bool {

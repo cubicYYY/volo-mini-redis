@@ -4,6 +4,7 @@ mod redis;
 
 use std::cell::RefCell;
 
+use anyhow::anyhow;
 use pilota::FastStr;
 use volo_gen::volo::redis::RedisCommand;
 
@@ -12,15 +13,15 @@ pub struct S {
 }
 
 impl S {
-	pub fn new() -> S {
-		S {
-			redis: RefCell::new(redis::Redis::new())
-		}
-	}
+    pub fn new() -> S {
+        S {
+            redis: RefCell::new(redis::Redis::new()),
+        }
+    }
 }
 
-/// FIXME Mutex or RwLock
-/// SAFETY: NONE! 
+// FIXME: Mutex or RwLock
+// SAFETY: NONE!
 unsafe impl Sync for S {}
 unsafe impl Send for S {}
 
@@ -33,12 +34,18 @@ impl volo_gen::volo::redis::ItemService for S {
     {
         // use volo_gen::volo::redis::GetItemRequest;
         use volo_gen::volo::redis::GetItemResponse;
+        println!("Received: {:?} {:?}", _req.cmd, _req.args);
         match _req.cmd {
             RedisCommand::Ping => {
                 if let Some(arg) = _req.args {
+                    let ans = if arg.len() == 0 {
+                        FastStr::from("pong")
+                    } else {
+                        FastStr::from(arg.join(" "))
+                    };
                     Ok(GetItemResponse {
                         ok: true,
-                        data: Some(FastStr::from(arg.join(" "))),
+                        data: Some(ans),
                     })
                 } else {
                     Ok(GetItemResponse {
@@ -50,13 +57,10 @@ impl volo_gen::volo::redis::ItemService for S {
             RedisCommand::Get => {
                 if let Some(arg) = _req.args {
                     if arg.len() != 1 {
-                        Ok(GetItemResponse {
-                            ok: false,
-                            data: Some(FastStr::from(format!(
-                                "Invalid arguments count: {} (expected 1)",
-                                arg.len()
-                            ))),
-                        })
+                        Err(anyhow!(
+                            "Invalid arguments count: {} (expected 1)",
+                            arg.len()
+                        ))
                     } else {
                         if let Some(value) = self.redis.borrow_mut().get(arg[0].as_ref()) {
                             Ok(GetItemResponse {
@@ -71,53 +75,58 @@ impl volo_gen::volo::redis::ItemService for S {
                         }
                     }
                 } else {
-                    Ok(GetItemResponse {
-                        ok: false,
-                        data: Some(FastStr::from("No arguments given (required)")),
-                    })
+                    Err(anyhow!("No arguments given (required)"))
                 }
             }
             RedisCommand::Set => {
                 if let Some(arg) = _req.args {
                     if arg.len() < 2 {
-                        Ok(GetItemResponse {
-                            ok: false,
-                            data: Some(FastStr::from(format!(
-                                "Invalid arguments count: {} (expected >= 2)",
-                                arg.len()
-                            ))),
-                        })
+                        Err(anyhow!(
+                            "Invalid arguments count: {} (expected >=2)",
+                            arg.len()
+                        ))
                     } else {
-						let (key, value) = (&arg[0], &arg[1]);
-                        if self.redis.borrow_mut().set(key.as_ref(), value.as_ref(), 0) { // TODO expire time from arg
-                            Ok(GetItemResponse {
-                                ok: true,
-                                data: None,
-                            })
-                        } else {
-                            Ok(GetItemResponse {
-                                ok: false,
-                                data: None,
-                            })
+                        let (key, value) = (&arg[0], &arg[1]);
+                        let mut milliseconds = 0;
+                        if let Some(exp_type) = arg.get(2) {
+                            if let Some(exp_num) = arg.get(3) {
+                                let exp_after = if let Ok(num) = exp_num.parse::<u128>() {
+                                    num
+                                } else {
+                                    return Err(anyhow!("Illegal time duration {exp_num}"));
+                                };
+
+                                match exp_type.to_lowercase().as_ref() {
+                                    "ex" => milliseconds = exp_after * 1000,
+                                    "px" => milliseconds = exp_after,
+                                    _ => {
+                                        return Err(anyhow!("Unsupported time type {exp_type}"));
+                                    }
+                                }
+                            } else {
+                                return Err(anyhow!("Duration number not provided."));
+                            }
                         }
+                        self.redis
+                            .borrow_mut()
+                            .set(key.as_ref(), value.as_ref(), milliseconds);
+                        println!("SET!{}", milliseconds);
+                        Ok(GetItemResponse {
+                            ok: true,
+                            data: None,
+                        })
                     }
                 } else {
-                    Ok(GetItemResponse {
-                        ok: false,
-                        data: Some(FastStr::from("No arguments given (required)")),
-                    })
+                    Err(anyhow!("No arguments given (required)"))
                 }
             }
             RedisCommand::Del => {
                 if let Some(arg) = _req.args {
                     if arg.len() < 1 {
-                        Ok(GetItemResponse {
-                            ok: false,
-                            data: Some(FastStr::from(format!(
-                                "Invalid arguments count: {} (expected >= 1)",
-                                arg.len()
-                            ))),
-                        })
+                        Err(anyhow!(
+                            "Invalid arguments count: {} (expected >= 1)",
+                            arg.len()
+                        ))
                     } else {
                         let mut success: u16 = 0;
                         for key in arg {
@@ -125,18 +134,19 @@ impl volo_gen::volo::redis::ItemService for S {
                         }
                         Ok(GetItemResponse {
                             ok: true,
-                            data: Some(FastStr::from(format!("{}", success))),
+                            data: Some(FastStr::from(format!("{success}"))),
                         })
                     }
                 } else {
-                    Ok(GetItemResponse {
-                        ok: false,
-                        data: Some(FastStr::from("No arguments given (required)")),
-                    })
+                    Err(anyhow!("No arguments given (required)"))
                 }
             }
-			RedisCommand::Publish => {unimplemented!()}
-			RedisCommand::Subscribe => {unimplemented!()}
+            RedisCommand::Publish => {
+                unimplemented!()
+            }
+            RedisCommand::Subscribe => {
+                unimplemented!()
+            }
         }
     }
 }
