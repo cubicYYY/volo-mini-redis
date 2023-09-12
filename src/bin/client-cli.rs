@@ -2,11 +2,8 @@ use colored::Colorize;
 use lazy_static::lazy_static;
 use mini_redis::{AsciiFilterLayer, TimedLayer};
 use pilota::FastStr;
-use std::{
-    env,
-    io::{self, Write},
-    net::SocketAddr,
-};
+use rustyline::{error::ReadlineError, Editor};
+use std::net::SocketAddr;
 use volo_gen::volo::redis::{GetItemResponse, RedisCommand};
 
 const REMOTE_ADDR: &str = "127.0.0.1:8080"; // TODO: specify in cmd args
@@ -28,21 +25,38 @@ async fn main() {
     // let cmd_args: Vec<String> = env::args().collect();
 
     let mut state = "connected";
-    let mut is_subscribe: bool = false;
-    let mut channel: String = String::new();
-    let mut buf: String = String::with_capacity(4096);
+    let mut is_subscribed: bool = false;
+    let mut channel_hd: String = String::new();
+    let mut cmdline = Editor::<()>::new();
 
     loop {
-        if is_subscribe {
-            unimplemented!();
+        if is_subscribed {
+            let resp = CLIENT
+                .get_item(volo_gen::volo::redis::GetItemRequest {
+                    cmd: RedisCommand::Subscribe,
+                    args: Some(vec![channel_hd.clone().into()]),
+                })
+                .await;
+            match resp {
+                Ok(info) => {
+                    println!("LISTENING: {}", info.data.clone().unwrap());
+                }
+                Err(e) => tracing::error!("{:?}", e),
+            }
             continue;
         }
-        print!("vodis[{state}]>  ");
-        let _ = io::stdout().flush();
-
-        buf.clear();
-        std::io::stdin().read_line(&mut buf).unwrap();
-        let mut arg_iter = buf.trim().split_whitespace().map(|s| s.to_string());
+        let line = match cmdline.readline(format!("vodis[{state}]>  ").as_ref()) {
+            Ok(line) => line,
+            Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => {
+                println!("Bye~~~");
+                return;
+            }
+            Err(err) => {
+                println!("Error: {:?}", err);
+                return;
+            }
+        };
+        let mut arg_iter = line.trim().split_whitespace().map(|s| s.to_string());
 
         let command = arg_iter.next();
         if command.is_none() {
@@ -123,6 +137,47 @@ async fn main() {
                     Ok(info) => {
                         colored_out(info);
                         println!("(deleted count)");
+                    }
+                    Err(e) => tracing::error!("{:?}", e),
+                }
+                continue;
+            }
+            "publish" => {
+                let resp = CLIENT
+                    .get_item(volo_gen::volo::redis::GetItemRequest {
+                        cmd: RedisCommand::Publish,
+                        args: Some(args),
+                    })
+                    .await;
+                match resp {
+                    Ok(info) => {
+                        colored_out(info);
+                        println!("(received client count)");
+                    }
+                    Err(e) => tracing::error!("{:?}", e),
+                }
+                continue;
+            }
+            "subscribe" => {
+                // handle this carefully
+                let resp = CLIENT
+                    .get_item(volo_gen::volo::redis::GetItemRequest {
+                        cmd: RedisCommand::Subscribe,
+                        args: Some(args),
+                    })
+                    .await;
+                match resp {
+                    Ok(info) => {
+                        if !info.ok {
+                            colored_out(info);
+                        } else {
+                            // NOT STABLE
+                            // info.data.inspect(|data|{println!("LISTENING: {}", data)});
+                            println!("HANDLE: {}", info.data.clone().unwrap());
+                            is_subscribed = true;
+                            channel_hd = info.data.unwrap().into();
+                            continue;
+                        }
                     }
                     Err(e) => tracing::error!("{:?}", e),
                 }

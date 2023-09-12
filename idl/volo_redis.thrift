@@ -6,7 +6,9 @@ enum RedisCommand {
     Set,
     Del,
     Publish,
-    Subscribe
+    Subscribe,
+    // INTERNALS:
+    _Fetch,
 }
 
 struct GetItemRequest {

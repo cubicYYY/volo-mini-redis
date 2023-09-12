@@ -205,10 +205,40 @@ impl volo_gen::volo::redis::ItemService for S {
                 }
             }
             RedisCommand::Publish => {
-                unimplemented!()
+                if let Some(arg) = _req.args {
+                    if arg.len() != 2 {
+                        Err(anyhow!(
+                            "Invalid arguments count: {} (expected =2)",
+                            arg.len()
+                        ))
+                    } else {
+                        let (chan, s) = (&arg[0], &arg[1]);
+                        Ok(GetItemResponse {
+                            ok: true,
+                            data: Some(self.redis.write().await.broadcast(chan, s).to_string().into()),
+                        })
+                    }
+                } else {
+                    Err(anyhow!("No arguments given (required)"))
+                }
             }
             RedisCommand::Subscribe => {
-                unimplemented!()
+                if let Some(arg) = _req.args {
+                    if arg.len() != 1 {
+                        Err(anyhow!(
+                            "Invalid arguments count: {} (expected =1)",
+                            arg.len()
+                        ))
+                    } else {
+                        let handler = arg[0].parse::<usize>()?;
+                        Ok(GetItemResponse {
+                            ok: true,
+                            data: Some(self.redis.write().await.fetch(handler).into()),
+                        })
+                    }
+                } else {
+                    Err(anyhow!("No arguments given (required)"))
+                }
             }
         }
     }

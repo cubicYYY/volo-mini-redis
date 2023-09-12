@@ -2,18 +2,23 @@
 
 迷你redis实验作业，基于volo-thrift.  
 
+## 用法
+
+`cargo run --bin server` 启动服务（端口8080）
+`cargo run --bin client-cli` 客户端CLI
+
 ## 已实现命令
 - ping （完整支持）
 - get （完整支持）
 - del （完整支持，批量）
 - set （支持过期时间）
+- publish （buggy）
+- subscribe （buggy）
 - client-cli
 - 中间件 （过滤非ASCII可打印字符，请求计时）
 
 ## TODOs
 
-- publish
-- subscribe
 - 布隆过滤器
 - 持久化
 
