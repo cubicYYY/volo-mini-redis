@@ -5,15 +5,14 @@
 ## 已实现命令
 - ping （完整支持）
 - get （完整支持）
-- del （支持批量）
-- set （部分支持过期时间）
+- del （完整支持，批量）
+- set （支持过期时间）
+- client-cli
 
 ## TODOs
 
 - publish
 - subscribe
-- client-cli
-- exit
 - 布隆过滤器
 - 持久化
 

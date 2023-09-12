@@ -6,7 +6,7 @@ use std::{
     io::{self, Write},
     net::SocketAddr,
 };
-use volo_gen::volo::redis::{RedisCommand, GetItemResponse};
+use volo_gen::volo::redis::{GetItemResponse, RedisCommand};
 
 const REMOTE_ADDR: &str = "127.0.0.1:8080"; // TODO: specify in cmd args
 
@@ -39,10 +39,7 @@ async fn main() {
 
         buf.clear();
         std::io::stdin().read_line(&mut buf).unwrap();
-        let mut arg_iter = buf
-            .trim()
-            .split_whitespace()
-            .map(|s| s.to_string());
+        let mut arg_iter = buf.trim().split_whitespace().map(|s| s.to_string());
 
         let command = arg_iter.next();
         if command.is_none() {
@@ -128,9 +125,9 @@ async fn main() {
                 }
                 continue;
             }
-            "exit "=> {
+            "exit " => {
                 println!("Bye~");
-                return ;
+                return;
             }
             _ => {
                 println!("Command {command} is not supported!");
