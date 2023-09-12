@@ -1,4 +1,4 @@
-use std::sync::mpsc::{channel, Receiver, Sender, RecvTimeoutError};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::time::Duration;
 use std::{
     collections::HashMap,
@@ -92,13 +92,19 @@ impl Redis {
 
     pub fn add_subscriber(&mut self, channel_name: &str) -> RcvHandle {
         let (tx, rx): (Sender<String>, Receiver<String>) = channel();
-        self.channels.entry(channel_name.into()).or_insert(vec![]).push(tx);
+        self.channels
+            .entry(channel_name.into())
+            .or_insert(vec![])
+            .push(tx);
         let hd: RcvHandle = self.rcv.len();
         self.rcv.insert(hd, rx);
         hd
     }
     pub fn fetch(&self, hd: RcvHandle) -> Result<String, RecvTimeoutError> {
-        self.rcv.get(&hd).unwrap().recv_timeout(Duration::from_millis(100))
+        self.rcv
+            .get(&hd)
+            .unwrap()
+            .recv_timeout(Duration::from_millis(0))
     }
 
     /// return: numbers
@@ -109,7 +115,7 @@ impl Redis {
                 match sender.send(content.into()) {
                     Ok(_) => {}
                     Err(_) => {
-                        // subscriber died
+                        // subscriber died / disconnected
                         // TODO...
                     }
                 }

@@ -215,7 +215,14 @@ impl volo_gen::volo::redis::ItemService for S {
                         let (chan, s) = (&arg[0], &arg[1]);
                         Ok(GetItemResponse {
                             ok: true,
-                            data: Some(self.redis.write().await.broadcast(chan, s).to_string().into()),
+                            data: Some(
+                                self.redis
+                                    .write()
+                                    .await
+                                    .broadcast(chan, s)
+                                    .to_string()
+                                    .into(),
+                            ),
                         })
                     }
                 } else {
@@ -233,7 +240,14 @@ impl volo_gen::volo::redis::ItemService for S {
                         let channel = &arg[0];
                         Ok(GetItemResponse {
                             ok: true,
-                            data: Some(self.redis.write().await.add_subscriber(channel).to_string().into()),
+                            data: Some(
+                                self.redis
+                                    .write()
+                                    .await
+                                    .add_subscriber(channel)
+                                    .to_string()
+                                    .into(),
+                            ),
                         })
                     }
                 } else {
@@ -252,7 +266,11 @@ impl volo_gen::volo::redis::ItemService for S {
                         let try_query = self.redis.read().await.fetch(handler);
                         Ok(GetItemResponse {
                             ok: try_query.is_ok(),
-                            data: if try_query.is_ok() {Some(try_query.expect("").into())} else {None},
+                            data: if try_query.is_ok() {
+                                Some(try_query.expect("").into())
+                            } else {
+                                None
+                            },
                         })
                     }
                 } else {

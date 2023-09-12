@@ -1,8 +1,8 @@
 #![feature(impl_trait_in_assoc_type)]
 use std::net::SocketAddr;
 
-use mini_redis::{AsciiFilterLayer, TimedLayer};
 use mini_redis::S;
+use mini_redis::{AsciiFilterLayer, TimedLayer};
 
 #[volo::main]
 async fn main() {

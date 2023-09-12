@@ -3,7 +3,7 @@ use lazy_static::lazy_static;
 use mini_redis::{AsciiFilterLayer, TimedLayer};
 use pilota::FastStr;
 use rustyline::{error::ReadlineError, Editor};
-use std::{net::SocketAddr, time::Duration, thread};
+use std::{net::SocketAddr, thread, time::Duration};
 use volo_gen::volo::redis::{GetItemResponse, RedisCommand};
 
 const REMOTE_ADDR: &str = "127.0.0.1:8080"; // TODO: specify in cmd args
@@ -24,7 +24,7 @@ async fn main() {
     tracing_subscriber::fmt::init();
     // let cmd_args: Vec<String> = env::args().collect();
 
-    let mut state = "connected";
+    let mut state: String = "connected".into();
     let mut is_subscribed: bool = false;
     let mut channel_hd: String = String::new();
     let mut cmdline = Editor::<()>::new();
@@ -44,13 +44,13 @@ async fn main() {
                         thread::sleep(Duration::from_secs(1));
                         continue;
                     }
-                    println!("LISTENING: {}", info.data.clone().unwrap());
+                    println!("[GOT] {}", info.data.clone().unwrap());
                 }
                 Err(e) => tracing::error!("{:?}", e),
             }
             continue;
         }
-        let line = match cmdline.readline(format!("vodis[{state}]>  ").as_ref()) {
+        let line = match cmdline.readline(format!("vodis[{}]>  ", state.clone()).as_ref()) {
             Ok(line) => line,
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => {
                 println!("Bye~~~");
@@ -168,7 +168,7 @@ async fn main() {
                 let resp = CLIENT
                     .get_item(volo_gen::volo::redis::GetItemRequest {
                         cmd: RedisCommand::Subscribe,
-                        args: Some(args),
+                        args: Some(args.clone()),
                     })
                     .await;
                 match resp {
@@ -176,11 +176,12 @@ async fn main() {
                         if !info.ok {
                             colored_out(info);
                         } else {
-                            // NOT STABLE
+                            // NOT STABLE:
                             // info.data.inspect(|data|{println!("LISTENING: {}", data)});
-                            println!("HANDLE: {}", info.data.clone().unwrap());
+                            println!("Listening handle: {}", info.data.clone().unwrap());
                             is_subscribed = true;
                             channel_hd = info.data.unwrap().into();
+                            state = args.join("").into();
                             continue;
                         }
                     }
