@@ -8,7 +8,7 @@ enum RedisCommand {
     Publish,
     Subscribe,
     // INTERNALS:
-    _Fetch,
+    Fetch,
 }
 
 struct GetItemRequest {

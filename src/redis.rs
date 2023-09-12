@@ -1,9 +1,9 @@
+use std::sync::mpsc::{channel, Receiver, Sender, RecvTimeoutError};
+use std::time::Duration;
 use std::{
     collections::HashMap,
     time::{SystemTime, UNIX_EPOCH},
 };
-use std::sync::mpsc::{channel, Sender, Receiver};
-
 
 pub type Timestamp = u128;
 pub type RcvHandle = usize;
@@ -22,7 +22,7 @@ pub struct Redis {
 
     /// Channel name-Senders
     channels: HashMap<String, Vec<Sender<String>>>,
-    rcv: HashMap<RcvHandle, Receiver<String>>
+    rcv: HashMap<RcvHandle, Receiver<String>>,
 }
 
 /// SAFETY: Sender&Receiver is dispatched to only a single client
@@ -90,26 +90,24 @@ impl Redis {
         }
     }
 
-    pub fn add_subscriber(&mut self, channel_name: &str) -> RcvHandle { 
+    pub fn add_subscriber(&mut self, channel_name: &str) -> RcvHandle {
         let (tx, rx): (Sender<String>, Receiver<String>) = channel();
-        self.channels.entry(channel_name.into())
-                    .or_insert(vec![])
-                    .push(tx);
+        self.channels.entry(channel_name.into()).or_insert(vec![]).push(tx);
         let hd: RcvHandle = self.rcv.len();
         self.rcv.insert(hd, rx);
         hd
     }
-    pub fn fetch(&mut self, hd: RcvHandle) -> String { 
-        self.rcv.get(&hd).unwrap().recv().unwrap()
+    pub fn fetch(&self, hd: RcvHandle) -> Result<String, RecvTimeoutError> {
+        self.rcv.get(&hd).unwrap().recv_timeout(Duration::from_millis(100))
     }
 
     /// return: numbers
-    pub fn broadcast(&mut self, channel_name: &str, content: &str) -> usize { 
+    pub fn broadcast(&mut self, channel_name: &str, content: &str) -> usize {
         let mut cnt = 0;
-        self.channels.entry(channel_name.into()).and_modify(|sds|{
+        self.channels.entry(channel_name.into()).and_modify(|sds| {
             for sender in &mut *sds {
                 match sender.send(content.into()) {
-                    Ok(_) => {},
+                    Ok(_) => {}
                     Err(_) => {
                         // subscriber died
                         // TODO...

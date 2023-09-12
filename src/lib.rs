@@ -78,7 +78,7 @@ where
         tracing::debug!("Received request {:?}", &req);
         let resp = self.0.call(cx, req).await;
         tracing::debug!("Sent response {:?}", &resp);
-        tracing::info!("Request took {}ms", now.elapsed().as_millis());
+        tracing::debug!("Request took {}ms", now.elapsed().as_millis());
         resp
     }
 }
@@ -230,10 +230,29 @@ impl volo_gen::volo::redis::ItemService for S {
                             arg.len()
                         ))
                     } else {
-                        let handler = arg[0].parse::<usize>()?;
+                        let channel = &arg[0];
                         Ok(GetItemResponse {
                             ok: true,
-                            data: Some(self.redis.write().await.fetch(handler).into()),
+                            data: Some(self.redis.write().await.add_subscriber(channel).to_string().into()),
+                        })
+                    }
+                } else {
+                    Err(anyhow!("No arguments given (required)"))
+                }
+            }
+            RedisCommand::Fetch => {
+                if let Some(arg) = _req.args {
+                    if arg.len() != 1 {
+                        Err(anyhow!(
+                            "Invalid arguments count: {} (expected =1)",
+                            arg.len()
+                        ))
+                    } else {
+                        let handler = arg[0].parse::<usize>()?;
+                        let try_query = self.redis.read().await.fetch(handler);
+                        Ok(GetItemResponse {
+                            ok: try_query.is_ok(),
+                            data: if try_query.is_ok() {Some(try_query.expect("").into())} else {None},
                         })
                     }
                 } else {

@@ -3,7 +3,7 @@ use lazy_static::lazy_static;
 use mini_redis::{AsciiFilterLayer, TimedLayer};
 use pilota::FastStr;
 use rustyline::{error::ReadlineError, Editor};
-use std::net::SocketAddr;
+use std::{net::SocketAddr, time::Duration, thread};
 use volo_gen::volo::redis::{GetItemResponse, RedisCommand};
 
 const REMOTE_ADDR: &str = "127.0.0.1:8080"; // TODO: specify in cmd args
@@ -31,14 +31,19 @@ async fn main() {
 
     loop {
         if is_subscribed {
+            // polling: 1 res/sec
             let resp = CLIENT
                 .get_item(volo_gen::volo::redis::GetItemRequest {
-                    cmd: RedisCommand::Subscribe,
+                    cmd: RedisCommand::Fetch,
                     args: Some(vec![channel_hd.clone().into()]),
                 })
                 .await;
             match resp {
                 Ok(info) => {
+                    if !info.ok {
+                        thread::sleep(Duration::from_secs(1));
+                        continue;
+                    }
                     println!("LISTENING: {}", info.data.clone().unwrap());
                 }
                 Err(e) => tracing::error!("{:?}", e),
