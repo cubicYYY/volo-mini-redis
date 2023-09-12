@@ -2,28 +2,96 @@
 
 mod redis;
 
-use std::cell::RefCell;
-
 use anyhow::anyhow;
-use pilota::FastStr;
+use tokio::sync::RwLock;
 use volo_gen::volo::redis::RedisCommand;
 
 pub struct S {
-    redis: RefCell<redis::Redis>,
+    redis: RwLock<redis::Redis>,
 }
 
 impl S {
     pub fn new() -> S {
         S {
-            redis: RefCell::new(redis::Redis::new()),
+            redis: RwLock::new(redis::Redis::new()),
         }
     }
 }
 
-// FIXME: Mutex or RwLock
-// SAFETY: NONE!
-unsafe impl Sync for S {}
-unsafe impl Send for S {}
+#[derive(Clone)]
+pub struct AsciiFilter<S>(S);
+
+#[volo::service]
+impl<Cx, Req, S> volo::Service<Cx, Req> for AsciiFilter<S>
+where
+    Req: std::fmt::Debug + Send + 'static,
+    S: Send + 'static + volo::Service<Cx, Req> + Sync,
+    S::Response: std::fmt::Debug,
+    S::Error: std::fmt::Debug,
+    anyhow::Error: Into<S::Error>,
+    Cx: Send + 'static,
+{
+    async fn call(&self, cx: &mut Cx, req: Req) -> Result<S::Response, S::Error> {
+        let resp = self.0.call(cx, req).await;
+        if resp.is_err() {
+            return resp;
+        }
+        if format!("{:?}", resp)
+            .chars()
+            .any(|c| (c as u32) < 32 || (c as u32) > 127)
+        {
+            Err(
+                anyhow!("Invalid chars found. Only printable ASCII chars are allowed in requests.")
+                    .into(),
+            )
+        } else {
+            resp
+        }
+    }
+}
+
+/// Block non-ASCII characters are
+pub struct AsciiFilterLayer;
+
+impl<S> volo::Layer<S> for AsciiFilterLayer {
+    type Service = AsciiFilter<S>;
+
+    fn layer(self, inner: S) -> Self::Service {
+        AsciiFilter(inner)
+    }
+}
+
+#[derive(Clone)]
+pub struct Timed<S>(S);
+
+#[volo::service]
+impl<Cx, Req, S> volo::Service<Cx, Req> for Timed<S>
+where
+    Req: std::fmt::Debug + Send + 'static,
+    S: Send + 'static + volo::Service<Cx, Req> + Sync,
+    S::Response: std::fmt::Debug,
+    S::Error: std::fmt::Debug,
+    Cx: Send + 'static,
+{
+    async fn call(&self, cx: &mut Cx, req: Req) -> Result<S::Response, S::Error> {
+        let now = std::time::Instant::now();
+        tracing::debug!("Received request {:?}", &req);
+        let resp = self.0.call(cx, req).await;
+        tracing::debug!("Sent response {:?}", &resp);
+        tracing::info!("Request took {}ms", now.elapsed().as_millis());
+        resp
+    }
+}
+
+pub struct TimedLayer;
+
+impl<S> volo::Layer<S> for TimedLayer {
+    type Service = Timed<S>;
+
+    fn layer(self, inner: S) -> Self::Service {
+        Timed(inner)
+    }
+}
 
 #[volo::async_trait]
 impl volo_gen::volo::redis::ItemService for S {
@@ -34,14 +102,13 @@ impl volo_gen::volo::redis::ItemService for S {
     {
         // use volo_gen::volo::redis::GetItemRequest;
         use volo_gen::volo::redis::GetItemResponse;
-        println!("Received: {:?} {:?}", _req.cmd, _req.args);
         match _req.cmd {
             RedisCommand::Ping => {
                 if let Some(arg) = _req.args {
                     let ans = if arg.len() == 0 {
-                        FastStr::from("pong")
+                        "pong".into()
                     } else {
-                        FastStr::from(arg.join(" "))
+                        arg.join(" ").into()
                     };
                     Ok(GetItemResponse {
                         ok: true,
@@ -50,7 +117,7 @@ impl volo_gen::volo::redis::ItemService for S {
                 } else {
                     Ok(GetItemResponse {
                         ok: true,
-                        data: Some(FastStr::from("pong")),
+                        data: Some("pong".into()),
                     })
                 }
             }
@@ -62,10 +129,10 @@ impl volo_gen::volo::redis::ItemService for S {
                             arg.len()
                         ))
                     } else {
-                        if let Some(value) = self.redis.borrow_mut().get(arg[0].as_ref()) {
+                        if let Some(value) = self.redis.write().await.get(arg[0].as_ref()) {
                             Ok(GetItemResponse {
                                 ok: true,
-                                data: Some(FastStr::from(value)),
+                                data: Some(value.into()),
                             })
                         } else {
                             Ok(GetItemResponse {
@@ -90,17 +157,13 @@ impl volo_gen::volo::redis::ItemService for S {
                         let mut milliseconds = 0;
                         if let Some(exp_type) = arg.get(2) {
                             if let Some(exp_num) = arg.get(3) {
-                                let exp_after = if let Ok(num) = exp_num.parse::<u128>() {
-                                    num
-                                } else {
-                                    return Err(anyhow!("Illegal time duration {exp_num}"));
-                                };
+                                let exp_after = exp_num.parse::<u128>()?;
 
                                 match exp_type.to_lowercase().as_ref() {
                                     "ex" => milliseconds = exp_after * 1000,
                                     "px" => milliseconds = exp_after,
                                     _ => {
-                                        return Err(anyhow!("Unsupported time type {exp_type}"));
+                                        return Err(anyhow!("Unsupported time type `{exp_type}`"));
                                     }
                                 }
                             } else {
@@ -108,12 +171,12 @@ impl volo_gen::volo::redis::ItemService for S {
                             }
                         }
                         self.redis
-                            .borrow_mut()
+                            .write()
+                            .await
                             .set(key.as_ref(), value.as_ref(), milliseconds);
-                        println!("SET!{}", milliseconds);
                         Ok(GetItemResponse {
                             ok: true,
-                            data: None,
+                            data: Some("OK".into()),
                         })
                     }
                 } else {
@@ -130,11 +193,11 @@ impl volo_gen::volo::redis::ItemService for S {
                     } else {
                         let mut success: u16 = 0;
                         for key in arg {
-                            success += self.redis.borrow_mut().del(key.as_ref()) as u16;
+                            success += self.redis.write().await.del(key.as_ref()) as u16;
                         }
                         Ok(GetItemResponse {
                             ok: true,
-                            data: Some(FastStr::from(format!("{success}"))),
+                            data: Some(success.to_string().into()),
                         })
                     }
                 } else {

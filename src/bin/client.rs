@@ -1,5 +1,6 @@
 use colored::Colorize;
 use lazy_static::lazy_static;
+use mini_redis::{AsciiFilterLayer, TimedLayer};
 use pilota::FastStr;
 use std::{
     env,
@@ -14,6 +15,8 @@ lazy_static! {
     static ref CLIENT: volo_gen::volo::redis::ItemServiceClient = {
         let addr: SocketAddr = REMOTE_ADDR.parse().unwrap();
         volo_gen::volo::redis::ItemServiceClientBuilder::new("volo-redis")
+            .layer_outer(TimedLayer)
+            .layer_outer(AsciiFilterLayer)
             .address(addr)
             .build()
     };
@@ -59,7 +62,7 @@ async fn main() {
                 if let Some(str_) = resp.data {
                     str_.to_string()
                 } else {
-                    String::from("(nil)")
+                    "(nil)".into()
                 }
             )
         };
