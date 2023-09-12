@@ -789,6 +789,7 @@ dependencies = [
  "lazy_static",
  "pilota",
  "rustyline",
+ "shell-words",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1606,6 +1607,12 @@ checksum = "900fba806f70c630b0a382d0d825e17a0f19fcd059a2ade1ff237bcddf446b31"
 dependencies = [
  "lazy_static",
 ]
+
+[[package]]
+name = "shell-words"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39acde55a154c4cd3ae048ac78cc21c25f3a0145e44111b523279113dce0d94a"
 
 [[package]]
 name = "signal-hook-registry"

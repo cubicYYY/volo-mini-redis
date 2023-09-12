@@ -32,7 +32,7 @@
 功能验证参考命令（请务必先启动服务端）：  
 ```plaintext
 ping
-ping 114 514
+ping "114 514" 1919 810
 get nope
 set abc xyz
 get abc
@@ -46,4 +46,5 @@ publish aaa abcdefg
 ```
 
 ## 运行示例
+![full test](statics/test.png)
 ![subscribe](statics/image.png)

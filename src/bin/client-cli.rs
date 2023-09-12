@@ -3,6 +3,7 @@ use lazy_static::lazy_static;
 use mini_redis::{AsciiFilterLayer, TimedLayer};
 use pilota::FastStr;
 use rustyline::{error::ReadlineError, Editor};
+use shell_words::split;
 use std::{net::SocketAddr, thread, time::Duration};
 use volo_gen::volo::redis::{GetItemResponse, RedisCommand};
 
@@ -18,6 +19,26 @@ lazy_static! {
             .build()
     };
 }
+async fn subscribe(handle: String) -> ! {
+    loop {
+        let resp = CLIENT
+            .get_item(volo_gen::volo::redis::GetItemRequest {
+                cmd: RedisCommand::Fetch,
+                args: Some(vec![handle.clone().into()]),
+            })
+            .await;
+        match resp {
+            Ok(info) => {
+                if !info.ok {
+                    thread::sleep(Duration::from_secs(1));
+                    continue;
+                }
+                println!("[GOT] {}", info.data.clone().unwrap());
+            }
+            Err(e) => tracing::error!("{:?}", e),
+        }
+    }
+}
 
 #[volo::main]
 async fn main() {
@@ -25,31 +46,9 @@ async fn main() {
     // let cmd_args: Vec<String> = env::args().collect();
 
     let mut state: String = "connected".into();
-    let mut is_subscribed: bool = false;
-    let mut channel_hd: String = String::new();
     let mut cmdline = Editor::<()>::new();
 
     loop {
-        if is_subscribed {
-            // polling: 1 res/sec
-            let resp = CLIENT
-                .get_item(volo_gen::volo::redis::GetItemRequest {
-                    cmd: RedisCommand::Fetch,
-                    args: Some(vec![channel_hd.clone().into()]),
-                })
-                .await;
-            match resp {
-                Ok(info) => {
-                    if !info.ok {
-                        thread::sleep(Duration::from_secs(1));
-                        continue;
-                    }
-                    println!("[GOT] {}", info.data.clone().unwrap());
-                }
-                Err(e) => tracing::error!("{:?}", e),
-            }
-            continue;
-        }
         let line = match cmdline.readline(format!("vodis[{}]>  ", state.clone()).as_ref()) {
             Ok(line) => line,
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => {
@@ -61,8 +60,14 @@ async fn main() {
                 return;
             }
         };
-        let mut arg_iter = line.trim().split_whitespace().map(|s| s.to_string());
-
+        let mut arg_iter;
+        match split(line.trim()) {
+            Ok(item) => arg_iter = item.into_iter(),
+            Err(e) => {
+                println!("Error: {:?}", e);
+                continue;
+            }
+        }
         let command = arg_iter.next();
         if command.is_none() {
             continue;
@@ -179,9 +184,8 @@ async fn main() {
                             // NOT STABLE:
                             // info.data.inspect(|data|{println!("LISTENING: {}", data)});
                             println!("Listening handle: {}", info.data.clone().unwrap());
-                            is_subscribed = true;
-                            channel_hd = info.data.unwrap().into();
                             state = args.join("").into();
+                            subscribe(info.data.unwrap().into()).await;
                             continue;
                         }
                     }
