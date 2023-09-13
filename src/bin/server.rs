@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 
 #[volo::main]
 async fn main() {
-    let addr: SocketAddr = "[::]:8080".parse().unwrap();
+    let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
     let addr = volo::net::Address::from(addr);
 
     let s = S::new();
