@@ -1,18 +1,62 @@
 use colored::Colorize;
 use lazy_static::lazy_static;
-use mini_redis::{AsciiFilterLayer, TimedLayer};
+use mini_redis::{ AsciiFilterLayer, TimedLayer };
 use pilota::FastStr;
-use rustyline::{error::ReadlineError, Editor};
+use rustyline::{ error::ReadlineError, Editor };
 use shell_words::split;
-use std::{net::SocketAddr, thread, time::Duration};
-use volo_gen::volo::redis::{GetItemResponse, RedisCommand};
+use std::{ net::SocketAddr, thread, time::Duration };
+use volo_gen::volo::redis::{ GetItemResponse, RedisCommand };
+use clap::{ Parser, Subcommand };
+#[derive(Debug, Parser)]
+#[command(author, version, about, long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
 
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// ping the server
+    Ping,
+    /// set a key-value pair
+    Set {
+        /// key
+        key: String,
+        /// value
+        value: String,
+    },
+    /// get a value by key, nil if key not exist
+    Get {
+        /// key
+        key: String,
+    },
+    /// delete a key-value pair, error if key not exist
+    Del {
+        /// key
+        key: String,
+    },
+    /// quit the client
+    Exit,
+    /// publish a message to a channel
+    Publish {
+        /// channel
+        channel: String,
+        /// message
+        message: String,
+    },
+    /// subscribe a channel
+    Subscribe {
+        /// channel
+        channel: String,
+    },
+}
 const REMOTE_ADDR: &str = "127.0.0.1:8080"; // TODO: specify in cmd args
 
 lazy_static! {
     static ref CLIENT: volo_gen::volo::redis::ItemServiceClient = {
         let addr: SocketAddr = REMOTE_ADDR.parse().unwrap();
-        volo_gen::volo::redis::ItemServiceClientBuilder::new("volo-redis")
+        volo_gen::volo::redis::ItemServiceClientBuilder
+            ::new("volo-redis")
             .layer_outer(TimedLayer)
             .layer_outer(AsciiFilterLayer)
             .address(addr)
@@ -21,12 +65,10 @@ lazy_static! {
 }
 async fn subscribe(handle: String) -> ! {
     loop {
-        let resp = CLIENT
-            .get_item(volo_gen::volo::redis::GetItemRequest {
-                cmd: RedisCommand::Fetch,
-                args: Some(vec![handle.clone().into()]),
-            })
-            .await;
+        let resp = CLIENT.get_item(volo_gen::volo::redis::GetItemRequest {
+            cmd: RedisCommand::Fetch,
+            args: Some(vec![handle.clone().into()]),
+        }).await;
         match resp {
             Ok(info) => {
                 if !info.ok {
@@ -60,21 +102,13 @@ async fn main() {
                 return;
             }
         };
-        let mut arg_iter;
-        match split(line.trim()) {
-            Ok(item) => arg_iter = item.into_iter(),
-            Err(e) => {
-                println!("Error: {:?}", e);
-                continue;
-            }
-        }
-        let command = arg_iter.next();
-        if command.is_none() {
+        let empty_element = std::iter::once("");
+        let line = empty_element.chain(line.split_whitespace());
+        let cli = Cli::try_parse_from(line);
+        if let Err(e) = cli {
+            let _ = clap::error::Error::print(&e);
             continue;
         }
-        let command = command.unwrap();
-        let args: Vec<FastStr> = arg_iter.map(|s| FastStr::from(s)).collect();
-
         let colored_out = move |resp: GetItemResponse| {
             println!(
                 "{}{}",
@@ -90,14 +124,13 @@ async fn main() {
                 }
             )
         };
-        match command.as_ref() {
-            "ping" => {
-                let resp = CLIENT
-                    .get_item(volo_gen::volo::redis::GetItemRequest {
-                        cmd: RedisCommand::Ping,
-                        args: Some(args),
-                    })
-                    .await;
+        let cli = cli.unwrap();
+        match cli.command {
+            Commands::Ping => {
+                let resp = CLIENT.get_item(volo_gen::volo::redis::GetItemRequest {
+                    cmd: RedisCommand::Ping,
+                    args: Some(vec![]),
+                }).await;
                 match resp {
                     Ok(info) => {
                         colored_out(info);
@@ -106,13 +139,11 @@ async fn main() {
                 }
                 continue;
             }
-            "get" => {
-                let resp = CLIENT
-                    .get_item(volo_gen::volo::redis::GetItemRequest {
-                        cmd: RedisCommand::Get,
-                        args: Some(args),
-                    })
-                    .await;
+            Commands::Set { key, value } => {
+                let resp = CLIENT.get_item(volo_gen::volo::redis::GetItemRequest {
+                    cmd: RedisCommand::Set,
+                    args: Some(vec![key.into(), value.into()]),
+                }).await;
                 match resp {
                     Ok(info) => {
                         colored_out(info);
@@ -121,13 +152,11 @@ async fn main() {
                 }
                 continue;
             }
-            "set" => {
-                let resp = CLIENT
-                    .get_item(volo_gen::volo::redis::GetItemRequest {
-                        cmd: RedisCommand::Set,
-                        args: Some(args),
-                    })
-                    .await;
+            Commands::Get { key } => {
+                let resp = CLIENT.get_item(volo_gen::volo::redis::GetItemRequest {
+                    cmd: RedisCommand::Get,
+                    args: Some(vec![key.into()]),
+                }).await;
                 match resp {
                     Ok(info) => {
                         colored_out(info);
@@ -136,13 +165,11 @@ async fn main() {
                 }
                 continue;
             }
-            "del" => {
-                let resp = CLIENT
-                    .get_item(volo_gen::volo::redis::GetItemRequest {
-                        cmd: RedisCommand::Del,
-                        args: Some(args),
-                    })
-                    .await;
+            Commands::Del { key } => {
+                let resp = CLIENT.get_item(volo_gen::volo::redis::GetItemRequest {
+                    cmd: RedisCommand::Del,
+                    args: Some(vec![key.into()]),
+                }).await;
                 match resp {
                     Ok(info) => {
                         colored_out(info);
@@ -152,13 +179,15 @@ async fn main() {
                 }
                 continue;
             }
-            "publish" => {
-                let resp = CLIENT
-                    .get_item(volo_gen::volo::redis::GetItemRequest {
-                        cmd: RedisCommand::Publish,
-                        args: Some(args),
-                    })
-                    .await;
+            Commands::Exit => {
+                println!("Bye~");
+                return;
+            }
+            Commands::Publish { channel, message } => {
+                let resp = CLIENT.get_item(volo_gen::volo::redis::GetItemRequest {
+                    cmd: RedisCommand::Publish,
+                    args: Some(vec![channel.into(), message.into()]),
+                }).await;
                 match resp {
                     Ok(info) => {
                         colored_out(info);
@@ -168,14 +197,12 @@ async fn main() {
                 }
                 continue;
             }
-            "subscribe" => {
+            Commands::Subscribe { channel } => {
                 // handle this carefully
-                let resp = CLIENT
-                    .get_item(volo_gen::volo::redis::GetItemRequest {
-                        cmd: RedisCommand::Subscribe,
-                        args: Some(args.clone()),
-                    })
-                    .await;
+                let resp = CLIENT.get_item(volo_gen::volo::redis::GetItemRequest {
+                    cmd: RedisCommand::Subscribe,
+                    args: Some(vec![channel.clone().into()]),
+                }).await;
                 match resp {
                     Ok(info) => {
                         if !info.ok {
@@ -184,7 +211,7 @@ async fn main() {
                             // NOT STABLE:
                             // info.data.inspect(|data|{println!("LISTENING: {}", data)});
                             println!("Listening handle: {}", info.data.clone().unwrap());
-                            state = args.join("").into();
+                            state = channel;
                             subscribe(info.data.unwrap().into()).await;
                             continue;
                         }
@@ -193,13 +220,9 @@ async fn main() {
                 }
                 continue;
             }
-            "exit " => {
-                println!("Bye~");
-                return;
-            }
             _ => {
-                println!("Command {command} is not supported!");
+                println!("Command is not supported!");
             }
-        }
+        };
     }
 }

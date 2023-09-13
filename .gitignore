@@ -3,3 +3,5 @@
 .vscode/
 target/
 *.code-workspace
+/.history
+src/AOF_FILE
