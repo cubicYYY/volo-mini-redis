@@ -2,19 +2,125 @@
 
 mod redis;
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Ok};
+use std::{
+    fs::{File, OpenOptions},
+    io::{BufRead, BufReader, Seek, SeekFrom, Write},
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
+};
 use tokio::sync::RwLock;
 use volo_gen::volo::redis::RedisCommand;
 
+use lazy_static::lazy_static;
+lazy_static! {
+    // = Arc::new(RwLock::new(Vec::new()));
+}
 pub struct S {
-    redis: RwLock<redis::Redis>,
+    pub redis: RwLock<redis::Redis>,
+    //pub COMMAND: Arc<Mutex<Vec<String>>>
+    sender: mpsc::Sender<String>,
 }
 
 impl S {
     pub fn new() -> S {
+        //let redis = RwLock::new(redis::Redis::new());
+        let (sender, receiver) = mpsc::channel();
+        // Spawn a thread to handle received messages
+        thread::spawn(move || {
+            let mut command: Vec<String> = Vec::new();
+            let mut aof_file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .open("/Users/a1234/Desktop/Mini_Redis/src/AOF_FILE")
+                .expect("Failed to open AOF file");
+            let mut last_write_time = Instant::now();
+            /*for msg in receiver {
+                command.push(msg);
+                // 检查是否距上次写入已经过去了 1 秒
+                if last_write_time.elapsed() >= Duration::from_secs(1) {
+                    //let mut cache = command.lock().unwrap();
+                    //println!("{:?}",cache.iter());
+                    // 获取当前文件大小（文件末尾）
+                    let file_size = aof_file
+                        .seek(SeekFrom::End(0))
+                        .expect("Failed to get file size");
+                    aof_file
+                        .seek(SeekFrom::Start(file_size))
+                        .expect("Failed to seek to end of file");
+                    // 将缓存中的操作写入 AOF 文件
+                    for cmd_line in command.iter() {
+                        write!(aof_file, "{}", cmd_line).expect("Failed to write to AOF file");
+                        println!("zzz");
+                    }
+                    aof_file.flush().expect("Failed to flush file");
+                    // 清空缓存
+                    command.clear();
+                    last_write_time = Instant::now();
+                }
+            } */
+            loop{
+                match receiver.recv_timeout(Duration::from_secs(1)){
+                    std::result::Result::Ok(msg) => {
+                        println!("zzz");
+                        command.push(msg);
+                        // 检查是否距上次写入已经过去了 1 秒
+                        if last_write_time.elapsed() >= Duration::from_secs(1) {
+                            //let mut cache = command.lock().unwrap();
+                            //println!("{:?}",cache.iter());
+                            // 获取当前文件大小（文件末尾）
+                            let file_size = aof_file
+                                .seek(SeekFrom::End(0))
+                                .expect("Failed to get file size");
+                            aof_file
+                                .seek(SeekFrom::Start(file_size))
+                                .expect("Failed to seek to end of file");
+                            // 将缓存中的操作写入 AOF 文件
+                            for cmd_line in command.iter() {
+                                write!(aof_file, "{}", cmd_line).expect("Failed to write to AOF file");
+                                println!("zzz");
+                            }
+                            aof_file.flush().expect("Failed to flush file");
+                            // 清空缓存
+                            command.clear();
+                            last_write_time = Instant::now();
+                        }
+                    }
+                    Err(_) => {
+                        println!("ccc");
+                            //let mut cache = command.lock().unwrap();
+                            //println!("{:?}",cache.iter());
+                            // 获取当前文件大小（文件末尾）
+                            let file_size = aof_file
+                                .seek(SeekFrom::End(0))
+                                .expect("Failed to get file size");
+                            aof_file
+                                .seek(SeekFrom::Start(file_size))
+                                .expect("Failed to seek to end of file");
+                            // 将缓存中的操作写入 AOF 文件
+                            for cmd_line in command.iter() {
+                                write!(aof_file, "{}", cmd_line).expect("Failed to write to AOF file");
+                                println!("zzz");
+                            }
+                            aof_file.flush().expect("Failed to flush file");
+                            // 清空缓存
+                            command.clear();
+                            last_write_time = Instant::now();
+    
+                    }
+                }
+            }
+            
+            
+        });
         S {
             redis: RwLock::new(redis::Redis::new()),
+            sender, 
         }
+    }
+    fn send_message(&self, msg: String) {
+        self.sender.send(msg).unwrap();
     }
 }
 
@@ -170,6 +276,19 @@ impl volo_gen::volo::redis::ItemService for S {
                                 return Err(anyhow!("Duration number not provided."));
                             }
                         }
+
+                        let command_str = format!("SET {:} {:} {:}\n", key, value, milliseconds);
+                        self.send_message(command_str);
+                        //let mut command = &self.COMMAND.write();
+                        println!("xxx");
+                        //panic!();
+                        //let command = Arc::clone(&self.COMMAND);
+                        //thread::spawn(move ||{
+                        //    let mut command_vec = command.lock().unwrap();
+                        //    command_vec.push(command_str);
+                        //   println!("yyy");
+                        //});
+
                         self.redis
                             .write()
                             .await
@@ -194,7 +313,19 @@ impl volo_gen::volo::redis::ItemService for S {
                         let mut success: u16 = 0;
                         for key in arg {
                             success += self.redis.write().await.del(key.as_ref()) as u16;
+                            let command_str = format!("DEL {:}\n", key);
+                            self.send_message(command_str);
                         }
+
+                        //let mut command = &self.COMMAND.write();
+                        println!("xxx");
+                        //panic!();
+                        //let command = Arc::clone(&self.COMMAND);
+                        // thread::spawn(move ||{
+                        //    let mut command_vec = command.lock().unwrap();
+                        //    command_vec.push(command_str);
+                        //    println!("yyy");
+                        // });
                         Ok(GetItemResponse {
                             ok: true,
                             data: Some(success.to_string().into()),
