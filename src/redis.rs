@@ -26,7 +26,7 @@ pub struct Redis {
 }
 
 /// SAFETY: Sender&Receiver is dispatched to only a single client
-/// ! WARNING: unauthorized client can perform illegal access by providing fake handles may lead to racing codition
+/// ! WARNING: unauthorized client can perform illegal access by providing fake handles, which may lead to a racing
 unsafe impl Send for Redis {}
 unsafe impl Sync for Redis {}
 
@@ -67,17 +67,27 @@ impl Redis {
         }
     }
 
-    // `exp_after`: milliseconds, 0 means never
-    pub fn set(&mut self, key: &str, value: &str, exp_after: u128) {
+    // TODO: Option with From trait to avoid special judge for exp=0
+    /// `exp_after`: milliseconds, 0 means never
+    pub fn set_after(&mut self, key: &str, value: &str, exp_after: u128) {
+        self.set_at(
+            key,
+            value,
+            if exp_after == 0 {
+                0
+            } else {
+                Self::now() + exp_after
+            },
+        );
+    }
+
+    /// `exp_at`: milliseconds, 0 means never
+    pub fn set_at(&mut self, key: &str, value: &str, exp_at: u128) {
         self.kvs.insert(
             key.to_string(),
             TimedValue {
                 value: value.to_string(),
-                expired_at: if exp_after == 0 {
-                    None
-                } else {
-                    Some(Self::now() + exp_after)
-                },
+                expired_at: if exp_at == 0 { None } else { Some(exp_at) },
             },
         );
     }

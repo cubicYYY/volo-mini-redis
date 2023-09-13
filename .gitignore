@@ -4,4 +4,4 @@
 target/
 *.code-workspace
 /.history
-src/AOF_FILE
+AOF_FILE

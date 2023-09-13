@@ -1,8 +1,8 @@
 #![feature(impl_trait_in_assoc_type)]
 use mini_redis::S;
-use mini_redis::{ AsciiFilterLayer, TimedLayer };
+use mini_redis::{AsciiFilterLayer, TimedLayer};
 use std::fs::File;
-use std::io::{ BufRead, BufReader };
+use std::io::{BufRead, BufReader};
 use std::net::SocketAddr;
 
 #[volo::main]
@@ -30,7 +30,7 @@ async fn main() {
         match command {
             "SET" => {
                 let mut s_clone = s.redis.write().await;
-                s_clone.set(id, title, miliseconds);
+                s_clone.set_after(id, title, miliseconds);
             }
             "DEL" => {
                 let mut s_clone = s.redis.write().await;
@@ -43,10 +43,10 @@ async fn main() {
     }
 
     tracing_subscriber::fmt::init();
-    volo_gen::volo::redis::ItemServiceServer
-        ::new(s)
+    volo_gen::volo::redis::ItemServiceServer::new(s)
         .layer_front(TimedLayer)
         .layer_front(AsciiFilterLayer)
-        .run(addr).await
+        .run(addr)
+        .await
         .unwrap();
 }
