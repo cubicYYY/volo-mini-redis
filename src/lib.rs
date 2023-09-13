@@ -31,7 +31,6 @@ impl S {
                 .open("./src/AOF_FILE")
                 .expect("Failed to open AOF file");
             let mut last_write_time = Instant::now();
- 
             loop{
                 match receiver.recv_timeout(Duration::from_secs(1)){
                     std::result::Result::Ok(msg) => {

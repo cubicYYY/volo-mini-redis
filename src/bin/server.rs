@@ -11,7 +11,6 @@ async fn main() {
     let addr = volo::net::Address::from(addr);
 
     let s = S::new();
-    //let redis = redis.write().unwrap();
     let file = File::open("./src/AOF_FILE").unwrap();
     let reader = BufReader::new(file);
 
