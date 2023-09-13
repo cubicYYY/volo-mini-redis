@@ -5,7 +5,7 @@ mod redis;
 use anyhow::{anyhow, Ok};
 use std::{
     fs::{File, OpenOptions},
-    io::{BufRead, BufReader, Seek, SeekFrom, Write},
+    io::{BufRead, BufReader, Seek, SeekFrom, Write, self},
     sync::mpsc,
     thread,
     time::{Duration, Instant},
@@ -13,19 +13,14 @@ use std::{
 use tokio::sync::RwLock;
 use volo_gen::volo::redis::RedisCommand;
 
-use lazy_static::lazy_static;
-lazy_static! {
-    // = Arc::new(RwLock::new(Vec::new()));
-}
+
 pub struct S {
     pub redis: RwLock<redis::Redis>,
-    //pub COMMAND: Arc<Mutex<Vec<String>>>
     sender: mpsc::Sender<String>,
 }
 
 impl S {
     pub fn new() -> S {
-        //let redis = RwLock::new(redis::Redis::new());
         let (sender, receiver) = mpsc::channel();
         // Spawn a thread to handle received messages
         thread::spawn(move || {
@@ -36,39 +31,14 @@ impl S {
                 .open("/Users/a1234/Desktop/Mini_Redis/src/AOF_FILE")
                 .expect("Failed to open AOF file");
             let mut last_write_time = Instant::now();
-            /*for msg in receiver {
-                command.push(msg);
-                // 检查是否距上次写入已经过去了 1 秒
-                if last_write_time.elapsed() >= Duration::from_secs(1) {
-                    //let mut cache = command.lock().unwrap();
-                    //println!("{:?}",cache.iter());
-                    // 获取当前文件大小（文件末尾）
-                    let file_size = aof_file
-                        .seek(SeekFrom::End(0))
-                        .expect("Failed to get file size");
-                    aof_file
-                        .seek(SeekFrom::Start(file_size))
-                        .expect("Failed to seek to end of file");
-                    // 将缓存中的操作写入 AOF 文件
-                    for cmd_line in command.iter() {
-                        write!(aof_file, "{}", cmd_line).expect("Failed to write to AOF file");
-                        println!("zzz");
-                    }
-                    aof_file.flush().expect("Failed to flush file");
-                    // 清空缓存
-                    command.clear();
-                    last_write_time = Instant::now();
-                }
-            } */
+ 
             loop{
                 match receiver.recv_timeout(Duration::from_secs(1)){
                     std::result::Result::Ok(msg) => {
-                        println!("zzz");
+                        println!("COMMAND SAVED!!");
                         command.push(msg);
                         // 检查是否距上次写入已经过去了 1 秒
                         if last_write_time.elapsed() >= Duration::from_secs(1) {
-                            //let mut cache = command.lock().unwrap();
-                            //println!("{:?}",cache.iter());
                             // 获取当前文件大小（文件末尾）
                             let file_size = aof_file
                                 .seek(SeekFrom::End(0))
@@ -79,7 +49,6 @@ impl S {
                             // 将缓存中的操作写入 AOF 文件
                             for cmd_line in command.iter() {
                                 write!(aof_file, "{}", cmd_line).expect("Failed to write to AOF file");
-                                println!("zzz");
                             }
                             aof_file.flush().expect("Failed to flush file");
                             // 清空缓存
@@ -88,9 +57,7 @@ impl S {
                         }
                     }
                     Err(_) => {
-                        println!("ccc");
-                            //let mut cache = command.lock().unwrap();
-                            //println!("{:?}",cache.iter());
+                        print!("AOF SAVING...");
                             // 获取当前文件大小（文件末尾）
                             let file_size = aof_file
                                 .seek(SeekFrom::End(0))
@@ -101,12 +68,13 @@ impl S {
                             // 将缓存中的操作写入 AOF 文件
                             for cmd_line in command.iter() {
                                 write!(aof_file, "{}", cmd_line).expect("Failed to write to AOF file");
-                                println!("zzz");
                             }
                             aof_file.flush().expect("Failed to flush file");
                             // 清空缓存
                             command.clear();
                             last_write_time = Instant::now();
+                        
+                        println!("COMPLETE!!");
     
                     }
                 }

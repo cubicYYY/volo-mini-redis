@@ -11,7 +11,6 @@ async fn main() {
     let addr = volo::net::Address::from(addr);
  
     let s = S::new();
-    //let redis = redis.write().unwrap();
     let file = File::open("/Users/a1234/Desktop/Mini_Redis/src/AOF_FILE").unwrap();
     let reader = BufReader::new(file);
 
@@ -28,17 +27,14 @@ async fn main() {
         let id = parts[1];
         let title = parts[2];
         let miliseconds = parts[3].parse::<u128>().unwrap();
-        //let milliseconds = parts[4];
         match command {
             "SET" => {
                 let mut s_clone = s.redis.write().await;
                 s_clone.set(id, title, miliseconds);
-                //println!("aaa");
             }
             "DEL" => {
                 let mut s_clone = s.redis.write().await;
                 s_clone.del(id);
-                //println!("bbb");
             }
             _ => {
                 eprintln!("Unknown command: {}", command);
