@@ -7,6 +7,11 @@ enum RedisCommand {
     Del,
     Publish,
     Subscribe,
+    Replicaof,
+    Sync,
+    ClusterCreate,
+    ClusterMeet,
+    ClusterAddSlots,
     // INTERNALS:
     Fetch,
 }

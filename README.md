@@ -16,11 +16,11 @@
 - subscribe*
 - client-cli
 - 中间件 （过滤非ASCII可打印字符，请求计时）
+- 持久化（AOF）
 
 ## TODOs
 
 - 布隆过滤器
-- 持久化（AOF）
 - Cluster模式
 - 主从模式
 

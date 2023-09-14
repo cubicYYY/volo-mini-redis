@@ -1,4 +1,6 @@
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
+use rmp_serde::{Serializer, Deserializer};
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use std::{
     collections::HashMap,
@@ -8,7 +10,9 @@ use std::{
 pub type Timestamp = u128;
 pub type RcvHandle = usize;
 
-#[derive(Debug, Clone)]
+const CLUSTER_MAX_SIZE: u16 = 16384;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct TimedValue {
     pub value: String,
 
@@ -16,9 +20,14 @@ struct TimedValue {
     pub expired_at: Option<Timestamp>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct StoredKV {
+    pub data: HashMap<String, TimedValue>
+}
+
 pub struct Redis {
     /// Key-Value
-    kvs: HashMap<String, TimedValue>,
+    kvs: StoredKV,
 
     /// Channel name-Senders
     channels: HashMap<String, Vec<Sender<String>>>,
@@ -33,7 +42,7 @@ unsafe impl Sync for Redis {}
 impl Redis {
     pub fn new() -> Self {
         Self {
-            kvs: HashMap::new(),
+            kvs: StoredKV {data: HashMap::new()},
             channels: HashMap::new(),
             rcv: HashMap::new(),
         }
@@ -55,9 +64,9 @@ impl Redis {
     }
 
     pub fn get(&mut self, key: &str) -> Option<String> {
-        if let Some(tv) = self.kvs.get(key) {
+        if let Some(tv) = self.kvs.data.get(key) {
             if Self::expired(tv.expired_at) {
-                self.kvs.remove(key);
+                self.kvs.data.remove(key);
                 None
             } else {
                 Some(tv.value.clone())
@@ -83,7 +92,7 @@ impl Redis {
 
     /// `exp_at`: milliseconds, 0 means never
     pub fn set_at(&mut self, key: &str, value: &str, exp_at: u128) {
-        self.kvs.insert(
+        self.kvs.data.insert(
             key.to_string(),
             TimedValue {
                 value: value.to_string(),
@@ -93,7 +102,7 @@ impl Redis {
     }
 
     pub fn del(&mut self, key: &str) -> bool {
-        if let Some(_) = self.kvs.remove(key) {
+        if let Some(_) = self.kvs.data.remove(key) {
             true
         } else {
             false
@@ -133,5 +142,24 @@ impl Redis {
             cnt = sds.len();
         });
         cnt
+    }
+
+    /// Serialize the data stored
+    /// TODO: asynchronously
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        self.kvs.serialize(&mut Serializer::new(&mut buf)).unwrap();
+        buf
+    }
+
+    /// De-serialize the data, WITH CURRENT DATA CLEARED
+    /// TODO: asynchronously
+    pub fn deserialize(&mut self, data: Vec<u8>) {
+        self.kvs = rmp_serde::from_slice(&data).unwrap();
+    }
+
+    /// New node added to current cluster
+    pub fn new_node(&mut self) {
+
     }
 }
