@@ -15,8 +15,9 @@
 - publish*
 - subscribe*
 - client-cli
-- 中间件 （过滤非ASCII可打印字符，请求计时）
+- 中间件（过滤非ASCII可打印字符，请求计时）
 - 持久化（AOF）
+- gracefully shutdown（服务端等待所有客户端退出后关闭）
 
 ## TODOs
 

@@ -30,16 +30,15 @@ async fn main() {
         let miliseconds = parts[3].parse::<u128>().unwrap();
         match command {
             "SET" => {
-                let mut s_clone = s.redis.write().await;
-                if miliseconds > now() || miliseconds == 0{
+                let mut s_clone = s.redis.lock().await;
+                if miliseconds > now() || miliseconds == 0 {
                     s_clone.set_after(id, title, miliseconds);
-                }else{
+                } else {
                     s_clone.del(id);
                 }
-                
             }
             "DEL" => {
-                let mut s_clone = s.redis.write().await;
+                let mut s_clone = s.redis.lock().await;
                 s_clone.del(id);
             }
             _ => {

@@ -7,44 +7,59 @@ use lazy_static::lazy_static;
 use rand::distributions::Alphanumeric;
 use rand::Rng;
 use redis::Timestamp;
-use std::sync::{Arc, Mutex};
+use std::borrow::BorrowMut;
+use std::sync::Arc;
 use std::{
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, Seek, SeekFrom, Write},
+    net::SocketAddr,
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::mpsc;
-use tokio::{signal, sync::RwLock};
+use tokio::{signal, sync::Mutex};
 use tracing::info;
+use uuid::Uuid;
 use volo_gen::volo::redis::RedisCommand;
 
-type RedisID = String;
+pub type RedisID = String;
+pub type Host = String;
+pub type Port = u32;
+
 enum RedisState {
     Single,
-    MasterOfflined,   // in cluster mode, slots not allocated
-    MasterOnline,     // m-s mode / cluster mode
-    SlaveOf(RedisID), // m-s mode / cluster mode
+    Master,              // m-s mode / cluster mode
+    SlaveOf(Host, Port), // m-s mode / cluster mode
 }
 
 impl std::fmt::Display for RedisState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RedisState::Single => write!(f, "Single"),
-            RedisState::MasterOfflined => write!(f, "Master(offline)"),
-            RedisState::MasterOnline => write!(f, "Master(online)"),
-            RedisState::SlaveOf(_) => write!(f, "Slave"),
+            RedisState::Master => write!(f, "Master"),
+            RedisState::SlaveOf(h, p) => write!(f, "Slave of {h}:{p}"),
         }
     }
 }
 
 lazy_static! {
-    static ref CTRL_C: Arc<RwLock<bool>> = Arc::new(RwLock::new(false));
+    static ref MASTER_ADDR: String = String::from("127.0.0.1:6379"); // TODO: read from command line
+    static ref CTRL_C: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+    static ref CLIENT: volo_gen::volo::redis::ItemServiceClient = {
+        let addr: SocketAddr = MASTER_ADDR.parse().unwrap();
+        volo_gen::volo::redis::ItemServiceClientBuilder::new("volo-redis")
+            .layer_outer(TimedLayer)
+            .layer_outer(AsciiFilterLayer)
+            .address(addr)
+            .build()
+    };
 }
+
+type ArwLock<T> = Arc<Mutex<T>>;
 pub struct S {
-    pub redis: Arc<RwLock<redis::Redis>>,
+    pub redis: ArwLock<redis::Redis>,
     sender: mpsc::Sender<String>,
-    state: RedisState,
+    state: ArwLock<RedisState>,
     in_cluster: bool,
     id: RedisID,
 }
@@ -99,9 +114,9 @@ impl S {
             }
         });
         S {
-            redis: Arc::new(RwLock::new(redis::Redis::new())),
+            redis: Arc::new(Mutex::new(redis::Redis::new())),
             sender,
-            state: RedisState::Single, // TODO: can be changed
+            state: Arc::new(Mutex::new(RedisState::Single)), // TODO: can be changed
             in_cluster: false,
             id, // TODO: can recover from old id
         }
@@ -202,7 +217,7 @@ impl volo_gen::volo::redis::ItemService for S {
     ) -> ::core::result::Result<volo_gen::volo::redis::GetItemResponse, ::volo_thrift::AnyhowError>
     {
         {
-            let ctrl_c = CTRL_C.read().await;
+            let ctrl_c = CTRL_C.lock().await;
             if *ctrl_c {
                 return Err(anyhow!("Server is shutting").into());
             }
@@ -212,7 +227,7 @@ impl volo_gen::volo::redis::ItemService for S {
         let child = volo::spawn(async move {
             let _ = signal::ctrl_c().await;
             info!("Ctrl-C received, shutting down");
-            *shared_data_clone.lock().unwrap() = true;
+            *shared_data_clone.lock().await = true;
         });
         use volo_gen::volo::redis::GetItemResponse;
         let response = match _req.cmd {
@@ -242,7 +257,7 @@ impl volo_gen::volo::redis::ItemService for S {
                             arg.len()
                         ))
                     } else {
-                        if let Some(value) = self.redis.write().await.get(arg[0].as_ref()) {
+                        if let Some(value) = self.redis.lock().await.get(arg[0].as_ref()) {
                             Ok(GetItemResponse {
                                 ok: true,
                                 data: Some(value.into()),
@@ -299,7 +314,7 @@ impl volo_gen::volo::redis::ItemService for S {
                         );
                         self.send_message(command_str).await;
                         println!("xxx");
-                        self.redis.write().await.set_after(
+                        self.redis.lock().await.set_after(
                             key.as_ref(),
                             value.as_ref(),
                             milliseconds,
@@ -323,7 +338,7 @@ impl volo_gen::volo::redis::ItemService for S {
                     } else {
                         let mut success: u16 = 0;
                         for key in arg {
-                            success += self.redis.write().await.del(key.as_ref()) as u16;
+                            success += self.redis.lock().await.del(key.as_ref()) as u16;
                             let command_str = format!("DEL {:} 0 0\n", key);
                             self.send_message(command_str).await;
                         }
@@ -349,7 +364,7 @@ impl volo_gen::volo::redis::ItemService for S {
                             ok: true,
                             data: Some(
                                 self.redis
-                                    .write()
+                                    .lock()
                                     .await
                                     .broadcast(chan, s)
                                     .to_string()
@@ -374,7 +389,7 @@ impl volo_gen::volo::redis::ItemService for S {
                             ok: true,
                             data: Some(
                                 self.redis
-                                    .write()
+                                    .lock()
                                     .await
                                     .add_subscriber(channel)
                                     .to_string()
@@ -395,7 +410,7 @@ impl volo_gen::volo::redis::ItemService for S {
                         ))
                     } else {
                         let handler = arg[0].parse::<usize>()?;
-                        let try_query = self.redis.read().await.fetch(handler);
+                        let try_query = self.redis.lock().await.fetch(handler);
                         Ok(GetItemResponse {
                             ok: try_query.is_ok(),
                             data: if try_query.is_ok() {
@@ -410,10 +425,55 @@ impl volo_gen::volo::redis::ItemService for S {
                 }
             }
             RedisCommand::Replicaof => {
-                unimplemented!()
+                let mut curr_state = self.state.lock().await;
+                if let RedisState::Single = *curr_state {
+                    Err(anyhow!(
+                        "REPLICAOF is not supported in this state: `{}`.",
+                        *curr_state
+                    ))
+                } else {
+                    if let Some(arg) = _req.args {
+                        if arg.len() != 2 {
+                            Err(anyhow!(
+                                "Invalid arguments count: {} (expected =0)",
+                                arg.len()
+                            ))
+                        } else {
+                            let host: Host = arg[0].to_string();
+                            let port: Port = arg[1].parse::<u32>()?;
+                            *curr_state = RedisState::SlaveOf(host, port);
+
+                            let resp = CLIENT
+                                .get_item(volo_gen::volo::redis::GetItemRequest {
+                                    cmd: RedisCommand::Sync,
+                                    args: None,
+                                })
+                                .await?;
+                            if !resp.ok || resp.data.is_none() {
+                                return Err(anyhow!("Failed to get deserialized data."));
+                            }
+                            self.redis
+                                .lock()
+                                .await
+                                .deserialize(resp.data.unwrap().into_bytes().to_vec());
+                            Ok(GetItemResponse {
+                                ok: true,
+                                data: None,
+                            })
+                        }
+                    } else {
+                        Err(anyhow!("No arguments given (required)"))
+                    }
+                }
             }
             RedisCommand::Sync => {
-                if let RedisState::MasterOnline = self.state {
+                let curr_state = self.state.lock().await;
+                if let RedisState::Single = *curr_state {
+                    Err(anyhow!(
+                        "SYNC is not supported in this state: `{}`.",
+                        *curr_state
+                    ))
+                } else {
                     if let Some(arg) = _req.args {
                         if arg.len() != 0 {
                             Err(anyhow!(
@@ -421,7 +481,7 @@ impl volo_gen::volo::redis::ItemService for S {
                                 arg.len()
                             ))
                         } else {
-                            let data = self.redis.read().await.serialize();
+                            let data = self.redis.lock().await.serialize();
                             Ok(GetItemResponse {
                                 ok: true,
                                 data: Some(String::from_utf8(data).unwrap().into()),
@@ -430,11 +490,6 @@ impl volo_gen::volo::redis::ItemService for S {
                     } else {
                         Err(anyhow!("No arguments given (required)"))
                     }
-                } else {
-                    Err(anyhow!(
-                        "SYNC is not supported in this state: `{}`.",
-                        self.state
-                    ))
                 }
             }
             RedisCommand::ClusterMeet => {
@@ -449,16 +504,16 @@ impl volo_gen::volo::redis::ItemService for S {
         };
         {
             {
-                let ctrl_c = CTRL_C.read().await;
+                let ctrl_c = CTRL_C.lock().await;
                 if *ctrl_c {
                     self.send_message("SHUTDOWN".to_string()).await;
                 }
             }
-            if *shared_data.lock().unwrap() {
+            if *shared_data.lock().await {
                 self.send_message("SHUTDOWN".to_string()).await;
-                let mut ctrl_c = CTRL_C.write().await;
+                let mut ctrl_c = CTRL_C.lock().await;
                 *ctrl_c = true;
-                info!("reject new requests");
+                info!("New requests rejected whe shutting down.");
             }
         }
         let _ = child.abort();

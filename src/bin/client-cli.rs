@@ -3,7 +3,7 @@ use colored::Colorize;
 use lazy_static::lazy_static;
 use mini_redis::{AsciiFilterLayer, TimedLayer};
 use pilota::FastStr;
-use rustyline::{error::ReadlineError, Editor};
+use rustyline::{error::ReadlineError, DefaultEditor};
 use shell_words::split;
 use std::{net::SocketAddr, thread, time::Duration};
 use volo_gen::volo::redis::{GetItemResponse, RedisCommand};
@@ -93,7 +93,7 @@ async fn main() {
     // let cmd_args: Vec<String> = env::args().collect();
 
     let mut state: String = "connected".into();
-    let mut cmdline = Editor::<()>::new();
+    let mut cmdline = DefaultEditor::new().expect("==command line failure==");
 
     loop {
         let line = match cmdline.readline(format!("vodis[{}]>  ", state.clone()).as_ref()) {

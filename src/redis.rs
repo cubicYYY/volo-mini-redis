@@ -34,11 +34,6 @@ pub struct Redis {
     rcv: HashMap<RcvHandle, Receiver<String>>,
 }
 
-/// SAFETY: Sender&Receiver is dispatched to only a single client
-/// ! WARNING: unauthorized client can perform illegal access by providing fake handles, which may lead to a racing
-unsafe impl Send for Redis {}
-unsafe impl Sync for Redis {}
-
 impl Redis {
     pub fn new() -> Self {
         Self {
