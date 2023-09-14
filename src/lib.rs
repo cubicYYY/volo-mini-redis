@@ -189,7 +189,6 @@ impl volo_gen::volo::redis::ItemService for S {
         use volo_gen::volo::redis::GetItemResponse;
         let response = match _req.cmd {
             RedisCommand::Ping => {
-                tokio::time::sleep(Duration::from_secs(10)).await;
                 if let Some(arg) = _req.args {
                     let ans = if arg.len() == 0 { "pong".into() } else { arg.join(" ").into() };
                     Ok(GetItemResponse {
