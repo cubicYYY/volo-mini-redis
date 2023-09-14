@@ -4,6 +4,7 @@ use mini_redis::{AsciiFilterLayer, TimedLayer};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::net::SocketAddr;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 #[volo::main]
 async fn main() {
@@ -30,7 +31,12 @@ async fn main() {
         match command {
             "SET" => {
                 let mut s_clone = s.redis.write().await;
-                s_clone.set_after(id, title, miliseconds);
+                if miliseconds > now() || miliseconds == 0{
+                    s_clone.set_after(id, title, miliseconds);
+                }else{
+                    s_clone.del(id);
+                }
+                
             }
             "DEL" => {
                 let mut s_clone = s.redis.write().await;
@@ -49,4 +55,12 @@ async fn main() {
         .run(addr)
         .await
         .unwrap();
+}
+
+fn now() -> u128 {
+    let current_timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Failed to get current timestamp");
+
+    current_timestamp.as_millis()
 }
