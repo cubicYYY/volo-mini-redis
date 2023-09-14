@@ -29,11 +29,17 @@ enum Commands {
         ttype: Option<String>,
         // time
         tnum: Option<u128>,
+        // transaction_id
+        #[clap(short, long)]
+        transaction_id: Option<String>,
     },
     /// get a value by key, nil if key not exist
     Get {
         /// key
         key: String,
+        /// transaction_id
+        #[clap(short, long)]
+        transaction_id: Option<String>,
     },
     /// delete a key-value pair, error if key not exist
     Del {
@@ -54,6 +60,15 @@ enum Commands {
         /// channel
         channel: String,
     },
+    /// watch a transaction
+    Watch {
+        /// key to watch
+        key: String,
+    },
+    /// start a transaction
+    Multi,
+    /// execute a transaction
+    Exec,
 }
 
 lazy_static! {
@@ -79,6 +94,7 @@ async fn subscribe(handle: String) -> ! {
                 cmd: RedisCommand::Fetch,
                 args: Some(vec![handle.clone().into()]),
                 client_id: None,
+                transaction_id: None,
             })
             .await;
         match resp {
@@ -101,7 +117,7 @@ async fn main() {
 
     let mut state: String = "connected".into();
     let mut cmdline = DefaultEditor::new().expect("==command line failure==");
-
+    let mut local_transaction_id: Option<String> = None;
     loop {
         let line = match cmdline.readline(format!("vodis[{}]>  ", state.clone()).as_ref()) {
             Ok(line) => line,
@@ -153,6 +169,7 @@ async fn main() {
                         cmd: RedisCommand::Ping,
                         args: args.map(|vstr| vstr.into_iter().map(|s| FastStr::new(s)).collect()),
                         client_id: None,
+                        transaction_id: None,
                     })
                     .await;
                 match resp {
@@ -168,6 +185,7 @@ async fn main() {
                 value,
                 ttype,
                 tnum,
+                transaction_id,
             } => {
                 let mut args = vec![key.into(), value.into()];
                 if ttype.is_some() {
@@ -181,6 +199,7 @@ async fn main() {
                         cmd: RedisCommand::Set,
                         args: Some(args.iter().map(|s| FastStr::new(s)).collect()),
                         client_id: None,
+                        transaction_id: transaction_id.clone().map(|s| FastStr::new(s)),
                     })
                     .await;
                 match resp {
@@ -191,12 +210,16 @@ async fn main() {
                 }
                 continue;
             }
-            Commands::Get { key } => {
+            Commands::Get {
+                key,
+                transaction_id,
+            } => {
                 let resp = CLIENT
                     .get_item(volo_gen::volo::redis::GetItemRequest {
                         cmd: RedisCommand::Get,
                         args: Some(vec![key.into()]),
                         client_id: None,
+                        transaction_id: transaction_id.map(|s| s.into()),
                     })
                     .await;
                 match resp {
@@ -213,6 +236,7 @@ async fn main() {
                         cmd: RedisCommand::Del,
                         args: Some(vec![key.into()]),
                         client_id: None,
+                        transaction_id: None,
                     })
                     .await;
                 match resp {
@@ -234,6 +258,7 @@ async fn main() {
                         cmd: RedisCommand::Publish,
                         args: Some(vec![channel.into(), message.into()]),
                         client_id: None,
+                        transaction_id: None,
                     })
                     .await;
                 match resp {
@@ -252,6 +277,7 @@ async fn main() {
                         cmd: RedisCommand::Subscribe,
                         args: Some(vec![channel.clone().into()]),
                         client_id: None,
+                        transaction_id: None,
                     })
                     .await;
                 match resp {
@@ -266,6 +292,72 @@ async fn main() {
                             subscribe(info.data.unwrap().into()).await;
                             continue;
                         }
+                    }
+                    Err(e) => tracing::error!("{:?}", e),
+                }
+                continue;
+            }
+            Commands::Watch { key } => {
+                if local_transaction_id.clone().is_none() {
+                    return tracing::error!("{:?}", "transaction is not started");
+                }
+                let resp = CLIENT
+                    .get_item(volo_gen::volo::redis::GetItemRequest {
+                        cmd: RedisCommand::Watch,
+                        args: Some(vec![key.into()]),
+                        client_id: None,
+                        transaction_id: local_transaction_id.clone().map(|s| s.into()),
+                    })
+                    .await;
+                match resp {
+                    Ok(info) => {
+                        colored_out(info);
+                    }
+                    Err(e) => tracing::error!("{:?}", e),
+                }
+                continue;
+            }
+            Commands::Multi => {
+                if local_transaction_id.is_some() {
+                    return tracing::error!("{:?}", "transaction is already started");
+                }
+                let resp = CLIENT
+                    .get_item(volo_gen::volo::redis::GetItemRequest {
+                        cmd: RedisCommand::Multi,
+                        args: None,
+                        client_id: None,
+                        transaction_id: None,
+                    })
+                    .await;
+                match resp {
+                    Ok(info) => {
+                        local_transaction_id = Some(info.clone().data.unwrap().into());
+                        colored_out(info);
+                        state = "transaction".into();
+                    }
+                    Err(e) => tracing::error!("{:?}", e),
+                }
+                continue;
+            }
+            Commands::Exec => {
+                if local_transaction_id.is_none() {
+                    return tracing::error!("{:?}", "transaction is not started");
+                }
+                let resp = CLIENT
+                    .exec(volo_gen::volo::redis::GetItemRequest {
+                        cmd: RedisCommand::Exec,
+                        args: None,
+                        client_id: None,
+                        transaction_id: local_transaction_id.clone().map(|s| s.into()),
+                    })
+                    .await;
+                match resp {
+                    Ok(info) => {
+                        for item in info.data.unwrap() {
+                            colored_out(item);
+                        }
+                        local_transaction_id = None;
+                        state = "connected".into();
                     }
                     Err(e) => tracing::error!("{:?}", e),
                 }

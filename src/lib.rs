@@ -7,6 +7,7 @@ use anyhow::{anyhow, Ok};
 use clap::{self, Parser};
 use cmdargs::ServerConfig;
 use lazy_static::lazy_static;
+use nanoid::nanoid;
 use pilota::FastStr;
 use redis::Timestamp;
 use std::collections::HashMap;
@@ -14,10 +15,9 @@ use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::{
-    fs::{File, OpenOptions},
-    io::{BufRead, BufReader, Seek, SeekFrom, Write},
+    fs::OpenOptions,
+    io::Write,
     net::SocketAddr,
-    thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::mpsc;
@@ -25,7 +25,7 @@ use tokio::{signal, sync::Mutex};
 use tracing::info;
 use uuid::Uuid;
 use volo::net::Address;
-use volo_gen::volo::redis::{GetItemRequest, GetItemResponse, RedisCommand};
+use volo_gen::volo::redis::{GetItemRequest, GetItemResponse, MultiGetItemResponse, RedisCommand};
 
 pub type Host = IpAddr;
 pub type Port = u16;
@@ -53,9 +53,9 @@ fn get_client(addr: impl Into<Address>) -> volo_gen::volo::redis::ItemServiceCli
         .address(addr)
         .build()
 }
-type ArwLock<T> = Arc<Mutex<T>>;
+type AMutex<T> = Arc<Mutex<T>>;
 lazy_static! {
-    static ref REDIS: ArwLock<redis::Redis> = Arc::new(Mutex::new(redis::Redis::new()));
+    static ref REDIS: AMutex<redis::Redis> = Arc::new(Mutex::new(redis::Redis::new()));
     // Command line args
     static ref CMD_ARGS: ServerConfig = ServerConfig::parse();
 
@@ -71,16 +71,26 @@ lazy_static! {
         let addr: SocketAddr = MASTER_ADDR.parse().unwrap();
         get_client(addr)
     };
+
+    //transaction id match the commands in the transaction
+    pub static ref TRANSACTION_HASHMAP: Arc<Mutex<HashMap<String, Transaction>>> = Arc::new(Mutex::new(HashMap::new()));
+    //key match the transaction pair with the value of the key
+    pub static ref TRANSACTION_WATCHER: Arc<Mutex<HashMap<String, HashMap<String, Option<String>>>>> = Arc::new(Mutex::new(HashMap::new()));
+    //keys a transaction is watching
+    pub static ref KEY_WATCHED: Arc<Mutex<HashMap<String, Vec<String>>>> = Arc::new(Mutex::new(HashMap::new()));
 }
 
 pub struct S {
-    pub redis: &'static ArwLock<redis::Redis>,
-    sender: ArwLock<mpsc::Sender<String>>,
-    pub state: ArwLock<RedisState>,
-    pub uuid: ArwLock<Uuid>, // TODO: remove this lock as it will only be modify once by main thread
-    pub client_addrs: ArwLock<HashMap<Uuid, SocketAddr>>,
+    pub redis: &'static AMutex<redis::Redis>,
+    sender: AMutex<mpsc::Sender<String>>,
+    pub state: AMutex<RedisState>,
+    pub uuid: AMutex<Uuid>, // TODO: remove this lock as it will only be modify once by main thread
+    pub client_addrs: AMutex<HashMap<Uuid, SocketAddr>>,
 }
-
+pub struct Transaction {
+    pub commands: Vec<GetItemRequest>,
+    pub is_wrong: bool,
+}
 impl S {
     pub async fn new() -> S {
         let (sender, mut receiver) = mpsc::channel(1024);
@@ -139,7 +149,8 @@ impl S {
             uuid: Arc::new(Mutex::new(Uuid::nil())),
             client_addrs: Arc::new(Mutex::new(HashMap::new())),
         };
-        // pre-run commands, TODO
+        // pre-run commands,
+        // TODO
         // ...
 
         // if SLAVE: then sync
@@ -152,10 +163,14 @@ impl S {
                     addr.port().to_string().into(),
                 ]),
                 client_id: None,
+                transaction_id: None,
             })
             .await
             .expect("Failed to execute init commands!");
             println!("Sync send.");
+        } else {
+            // Gen for no-slaves
+            *(s.uuid.lock().await) = Uuid::new_v4();
         }
         s
     }
@@ -295,6 +310,20 @@ impl S {
                 }
             }
             RedisCommand::Set => {
+                // let mut is_master: bool = false;
+                {
+                    let curr_state = self.state.lock().await;
+                    if let RedisState::SlaveOf(_, _) = *curr_state {
+                        if _req.client_id.is_none() {
+                            return Err(anyhow!(
+                                "Set is forbidden on slave node if no uuid provided."
+                            ));
+                        }
+                    }
+                    // if let RedisState::Master = *curr_state {
+                    //     is_master = true;
+                    // }
+                }
                 if _req.args.is_none() {
                     return Err(anyhow!("No arguments given (required)"));
                 }
@@ -342,6 +371,22 @@ impl S {
                     .lock()
                     .await
                     .set_after(key.as_ref(), value.as_ref(), milliseconds);
+                // propagate to slaves
+                // no need to be master!
+                let caddr = self.client_addrs.lock().await;
+                println!("propagate to {} clients", caddr.len());
+                for (_, cliaddr) in (*caddr).iter() {
+                    println!("p. to {}.", cliaddr.clone().to_string());
+                    let _resp = get_client(cliaddr.clone())
+                        .get_item(volo_gen::volo::redis::GetItemRequest {
+                            cmd: RedisCommand::Set,
+                            args: Some(arg.clone()),
+                            client_id: Some((*self.uuid.lock().await).to_string().into()), // Not Forwarded
+                            transaction_id: _req.transaction_id.clone(), // Forwarded
+                        })
+                        .await;
+                }
+
                 Ok(GetItemResponse {
                     ok: true,
                     data: Some("OK".into()),
@@ -442,6 +487,7 @@ impl S {
                             self_addr.port().to_string().into(),
                         ]),
                         client_id: None,
+                        transaction_id: None,
                     })
                     .await?;
 
@@ -479,6 +525,7 @@ impl S {
                 // add this uuid to client list
                 let mut caddr = self.client_addrs.lock().await;
                 caddr.insert(gen_uuid, SocketAddr::new(clihost, cliport));
+
                 tokio::spawn(async move {
                     let readonly = REDIS.lock().await;
                     let data = readonly.serialize(); // HEAVY WORKLOAD
@@ -488,6 +535,7 @@ impl S {
                             cmd: RedisCommand::SyncGot,
                             args: Some(vec![unsafe { FastStr::from_vec_u8_unchecked(data) }]),
                             client_id: None,
+                            transaction_id: None,
                         })
                         .await;
                 });
@@ -504,6 +552,73 @@ impl S {
             }
             RedisCommand::ClusterCreate => {
                 unimplemented!()
+            }
+            RedisCommand::Exec => {
+                unimplemented!()
+            }
+            RedisCommand::Multi => {
+                //generate a nanoid as transaction id make sure it is not a key in the Transaction hashmap
+                let mut transaction_id = nanoid!(5);
+                while TRANSACTION_HASHMAP
+                    .lock()
+                    .await
+                    .contains_key(&transaction_id)
+                {
+                    transaction_id = nanoid!(5);
+                }
+                TRANSACTION_HASHMAP.lock().await.insert(
+                    transaction_id.clone(),
+                    Transaction {
+                        commands: Vec::new(),
+                        is_wrong: false,
+                    },
+                );
+                Ok(GetItemResponse {
+                    ok: true,
+                    data: Some(transaction_id.into()),
+                })
+            }
+            RedisCommand::Watch => {
+                if let Some(arg) = &_req.args {
+                    let watch_key = arg[0].clone().to_string();
+                    let watch_transaction_id = _req.transaction_id.clone().unwrap().to_string();
+                    let mut transaction_watcher = TRANSACTION_WATCHER.lock().await;
+                    let mut key_watched = KEY_WATCHED.lock().await;
+                    let mut transactions_watched_the_key = if key_watched.contains_key(&watch_key) {
+                        key_watched.get_mut(&watch_key).unwrap()
+                    } else {
+                        let mut transactions = Vec::new();
+                        key_watched.insert(watch_key.clone(), transactions);
+                        key_watched.get_mut(&watch_key).unwrap()
+                    };
+                    let match_value = self.redis.lock().await.get(watch_key.as_ref());
+                    //transaction_watcher is key map the watching transaction id and the value of the key
+                    let response = if transaction_watcher.contains_key(&watch_key) {
+                        let mut watch_pair = transaction_watcher.get_mut(&watch_key).unwrap();
+                        if watch_pair.contains_key(&watch_transaction_id) {
+                            Err(anyhow!("Transaction already watched"))
+                        } else {
+                            watch_pair.insert(watch_transaction_id.clone(), match_value.clone());
+                            transactions_watched_the_key.push(watch_transaction_id.clone());
+                            Ok(GetItemResponse {
+                                ok: true,
+                                data: Some("OK".into()),
+                            })
+                        }
+                    } else {
+                        let mut watch_pair = HashMap::new();
+                        watch_pair.insert(watch_transaction_id.clone(), match_value.clone());
+                        transaction_watcher.insert(watch_key.clone(), watch_pair);
+                        transactions_watched_the_key.push(watch_transaction_id.clone());
+                        Ok(GetItemResponse {
+                            ok: true,
+                            data: Some("OK".into()),
+                        })
+                    };
+                    response
+                } else {
+                    Err(anyhow!("No arguments given (required)"))
+                }
             }
             // Internal commands, you can seen as remote interupts
             RedisCommand::Fetch => {
@@ -571,6 +686,171 @@ impl volo_gen::volo::redis::ItemService for S {
             *shared_data_clone.lock().await = true;
         });
         let response = self.react_to_command(_req).await;
+        {
+            {
+                let ctrl_c = CTRL_C.lock().await;
+                if *ctrl_c {
+                    self.send_message("SHUTDOWN".to_string()).await;
+                }
+            }
+            if *shared_data.lock().await {
+                self.send_message("SHUTDOWN".to_string()).await;
+                let mut ctrl_c = CTRL_C.lock().await;
+                *ctrl_c = true;
+                info!("New requests rejected whe shutting down.");
+            }
+        }
+        let _ = child.abort();
+        return response;
+    }
+    async fn exec(
+        &self,
+        _req: volo_gen::volo::redis::GetItemRequest,
+    ) -> ::core::result::Result<
+        volo_gen::volo::redis::MultiGetItemResponse,
+        ::volo_thrift::AnyhowError,
+    > {
+        info!("deal with exec");
+        {
+            let ctrl_c = CTRL_C.lock().await;
+            if *ctrl_c {
+                return Err(anyhow!("Server is shutting").into());
+            }
+        }
+        let shared_data = Arc::new(Mutex::new(false));
+        let shared_data_clone = Arc::clone(&shared_data);
+        let child = volo::spawn(async move {
+            let _ = signal::ctrl_c().await;
+            info!("Ctrl-C received, shutting down");
+            *shared_data_clone.lock().await = true;
+        });
+        let response = match _req.cmd {
+            RedisCommand::Exec => {
+                let transaction_id = _req.transaction_id.unwrap();
+                let mut transactions = TRANSACTION_HASHMAP.lock().await;
+                let mut transaction = transactions.get_mut(&transaction_id.to_string()).unwrap();
+                let mut transaction_watcher = TRANSACTION_WATCHER.lock().await;
+                let key_watched = KEY_WATCHED.lock().await;
+                info!("dealing with checking");
+                for key in key_watched.keys() {
+                    if transaction_watcher.contains_key(key) {
+                        let mut watch_pair = transaction_watcher.get_mut(&key.clone()).unwrap();
+                        let old_value = watch_pair.get(&transaction_id.to_string()).unwrap();
+                        let new_value = self.redis.lock().await.get(key.as_ref());
+                        if old_value.to_owned() != new_value {
+                            transaction.is_wrong = true;
+                            break;
+                        }
+                    }
+                }
+                info!("checking done");
+                if transaction.is_wrong {
+                    Err(anyhow!("Transaction is wrong"))
+                } else {
+                    let mut responses = Vec::new();
+                    for command in transaction.commands.iter() {
+                        let resp = match command.cmd {
+                            RedisCommand::Set => {
+                                info!("deal with set");
+                                if let Some(arg) = &command.args {
+                                    if arg.len() < 2 {
+                                        Err(anyhow!(
+                                            "Invalid arguments count: {} (expected >=2)",
+                                            arg.len()
+                                        ))
+                                    } else {
+                                        let (key, value) = (&arg[0], &arg[1]);
+                                        let mut milliseconds = 0;
+                                        if let Some(exp_type) = arg.get(2) {
+                                            if let Some(exp_num) = arg.get(3) {
+                                                let exp_after = exp_num.parse::<u128>()?;
+
+                                                match exp_type.to_lowercase().as_ref() {
+                                                    "ex" => {
+                                                        milliseconds = exp_after * 1000;
+                                                    }
+                                                    "px" => {
+                                                        milliseconds = exp_after;
+                                                    }
+                                                    _ => {
+                                                        return Err(anyhow!(
+                                                            "Unsupported time type `{exp_type}`"
+                                                        ));
+                                                    }
+                                                }
+                                            } else {
+                                                return Err(anyhow!(
+                                                    "Duration number not provided."
+                                                ));
+                                            }
+                                        }
+                                        let command_str = format!(
+                                            "SET {} {} {}\n",
+                                            key,
+                                            value,
+                                            if milliseconds != 0 {
+                                                now() + milliseconds
+                                            } else {
+                                                0u128
+                                            }
+                                        );
+                                        self.send_message(command_str).await;
+                                        self.redis.lock().await.set_after(
+                                            key.as_ref(),
+                                            value.as_ref(),
+                                            milliseconds,
+                                        );
+                                        Ok(GetItemResponse {
+                                            ok: true,
+                                            data: Some("OK".into()),
+                                        })
+                                    }
+                                } else {
+                                    Err(anyhow!("No arguments given (required)"))
+                                }
+                            }
+                            RedisCommand::Get => {
+                                info!("deal with get");
+                                if let Some(arg) = &command.args {
+                                    if arg.len() != 1 {
+                                        Err(anyhow!(
+                                            "Invalid arguments count: {} (expected 1)",
+                                            arg.len()
+                                        ))
+                                    } else {
+                                        if let Some(value) =
+                                            self.redis.lock().await.get(arg[0].as_ref())
+                                        {
+                                            Ok(GetItemResponse {
+                                                ok: true,
+                                                data: Some(value.into()),
+                                            })
+                                        } else {
+                                            Ok(GetItemResponse {
+                                                ok: false,
+                                                data: None,
+                                            })
+                                        }
+                                    }
+                                } else {
+                                    info!("{:?}", &_req.args);
+                                    Err(anyhow!("No arguments given (required)"))
+                                }
+                            }
+                            _ => Err(anyhow!("Unsupported command")),
+                        };
+                        responses.push(resp.unwrap());
+                    }
+                    transactions.remove(&transaction_id.to_string());
+                    info!("exec done with {:?}", responses);
+                    Ok(MultiGetItemResponse {
+                        ok: true,
+                        data: Some(responses),
+                    })
+                }
+            }
+            _ => Err(anyhow!("Unsupported command")),
+        };
         {
             {
                 let ctrl_c = CTRL_C.lock().await;

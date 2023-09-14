@@ -46,7 +46,18 @@ subscribe aaa
 ```plaintext
 publish aaa abcdefg
 ```
-
+主从：  
+```plaintext
+cargo run --bin server -- -i 127.0.0.1 -p 8080 #主@8080
+cargo run --bin client-cli -- -s 127.0.0.1:8080 #主的客户端
+cargo run --bin server -- -i 127.0.0.1 -p 8888 --slaveof 127.0.0.1:8080 #从@8888
+cargo run --bin client-cli -- -s 127.0.0.1:8888 #从的客户端
+#对主客户端：
+set a aaa
+#在从客户端：
+get a
+# [OK] aaa
+```
 ## 运行示例
 ![full test](statics/test.png)
 ![subscribe](statics/image.png)
