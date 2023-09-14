@@ -2,19 +2,19 @@
 
 mod redis;
 
-use anyhow::{ anyhow, Ok };
+use anyhow::{anyhow, Ok};
 use redis::Timestamp;
-use tracing::info;
+use std::sync::{Arc, Mutex};
 use std::{
-    fs::{ File, OpenOptions },
-    io::{ BufRead, BufReader, Seek, SeekFrom, Write },
+    fs::{File, OpenOptions},
+    io::{BufRead, BufReader, Seek, SeekFrom, Write},
     // sync::mpsc,
     thread,
-    time::{ Duration, Instant, SystemTime, UNIX_EPOCH },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::{ sync::RwLock, signal, sync::mpsc };
+use tokio::{signal, sync::mpsc, sync::RwLock};
+use tracing::info;
 use volo_gen::volo::redis::RedisCommand;
-use std::sync::{ Arc, Mutex };
 pub struct S {
     pub redis: RwLock<redis::Redis>,
     sender: mpsc::Sender<String>,
@@ -50,17 +50,10 @@ impl S {
                     std::result::Result::Ok(msg) => {
                         command.push(msg);
                         // 检查是否距上次写入已经过去了 1 秒
-                        if  last_write_time.elapsed() >= Duration::from_secs(1) {
+                        if last_write_time.elapsed() >= Duration::from_secs(1) {
                             flush(&command);
                             command.clear();
-                        } else {
-                            command.push(msg);
-                            // 检查是否距上次写入已经过去了 1 秒
-                            if last_write_time.elapsed() >= Duration::from_secs(1) {
-                                flush(&command);
-                                command.clear();
-                                last_write_time = Instant::now();
-                            }
+                            last_write_time = Instant::now();
                         }
                     }
                     Err(_) => {
@@ -69,7 +62,6 @@ impl S {
                         last_write_time = Instant::now();
                     }
                 }
-
             }
         });
         S {
@@ -86,30 +78,27 @@ impl S {
 pub struct AsciiFilter<S>(S);
 
 #[volo::service]
-impl<Cx, Req, S> volo::Service<Cx, Req>
-    for AsciiFilter<S>
-    where
-        Req: std::fmt::Debug + Send + 'static,
-        S: Send + 'static + volo::Service<Cx, Req> + Sync,
-        S::Response: std::fmt::Debug,
-        S::Error: std::fmt::Debug,
-        anyhow::Error: Into<S::Error>,
-        Cx: Send + 'static
+impl<Cx, Req, S> volo::Service<Cx, Req> for AsciiFilter<S>
+where
+    Req: std::fmt::Debug + Send + 'static,
+    S: Send + 'static + volo::Service<Cx, Req> + Sync,
+    S::Response: std::fmt::Debug,
+    S::Error: std::fmt::Debug,
+    anyhow::Error: Into<S::Error>,
+    Cx: Send + 'static,
 {
     async fn call(&self, cx: &mut Cx, req: Req) -> Result<S::Response, S::Error> {
         let resp = self.0.call(cx, req).await;
         if resp.is_err() {
             return resp;
         }
-        if
-            format!("{:?}", resp)
-                .chars()
-                .any(|c| ((c as u32) < 32 || (c as u32) > 127))
+        if format!("{:?}", resp)
+            .chars()
+            .any(|c| ((c as u32) < 32 || (c as u32) > 127))
         {
             Err(
-                anyhow!(
-                    "Invalid chars found. Only printable ASCII chars are allowed in requests."
-                ).into()
+                anyhow!("Invalid chars found. Only printable ASCII chars are allowed in requests.")
+                    .into(),
             )
         } else {
             resp
@@ -132,14 +121,13 @@ impl<S> volo::Layer<S> for AsciiFilterLayer {
 pub struct Timed<S>(S);
 
 #[volo::service]
-impl<Cx, Req, S> volo::Service<Cx, Req>
-    for Timed<S>
-    where
-        Req: std::fmt::Debug + Send + 'static,
-        S: Send + 'static + volo::Service<Cx, Req> + Sync,
-        S::Response: std::fmt::Debug,
-        S::Error: std::fmt::Debug,
-        Cx: Send + 'static
+impl<Cx, Req, S> volo::Service<Cx, Req> for Timed<S>
+where
+    Req: std::fmt::Debug + Send + 'static,
+    S: Send + 'static + volo::Service<Cx, Req> + Sync,
+    S::Response: std::fmt::Debug,
+    S::Error: std::fmt::Debug,
+    Cx: Send + 'static,
 {
     async fn call(&self, cx: &mut Cx, req: Req) -> Result<S::Response, S::Error> {
         let now = std::time::Instant::now();
@@ -173,11 +161,9 @@ impl<S> volo::Layer<S> for TimedLayer {
 impl volo_gen::volo::redis::ItemService for S {
     async fn get_item(
         &self,
-        _req: volo_gen::volo::redis::GetItemRequest
-    ) -> ::core::result::Result<
-        volo_gen::volo::redis::GetItemResponse,
-        ::volo_thrift::AnyhowError
-    > {
+        _req: volo_gen::volo::redis::GetItemRequest,
+    ) -> ::core::result::Result<volo_gen::volo::redis::GetItemResponse, ::volo_thrift::AnyhowError>
+    {
         {
             let ctrl_c = CTRL_C.read().await;
             if *ctrl_c {
@@ -196,7 +182,11 @@ impl volo_gen::volo::redis::ItemService for S {
             RedisCommand::Ping => {
                 tokio::time::sleep(Duration::from_secs(10)).await;
                 if let Some(arg) = _req.args {
-                    let ans = if arg.len() == 0 { "pong".into() } else { arg.join(" ").into() };
+                    let ans = if arg.len() == 0 {
+                        "pong".into()
+                    } else {
+                        arg.join(" ").into()
+                    };
                     Ok(GetItemResponse {
                         ok: true,
                         data: Some(ans),
@@ -211,7 +201,10 @@ impl volo_gen::volo::redis::ItemService for S {
             RedisCommand::Get => {
                 if let Some(arg) = _req.args {
                     if arg.len() != 1 {
-                        Err(anyhow!("Invalid arguments count: {} (expected 1)", arg.len()))
+                        Err(anyhow!(
+                            "Invalid arguments count: {} (expected 1)",
+                            arg.len()
+                        ))
                     } else {
                         if let Some(value) = self.redis.write().await.get(arg[0].as_ref()) {
                             Ok(GetItemResponse {
@@ -232,7 +225,10 @@ impl volo_gen::volo::redis::ItemService for S {
             RedisCommand::Set => {
                 if let Some(arg) = _req.args {
                     if arg.len() < 2 {
-                        Err(anyhow!("Invalid arguments count: {} (expected >=2)", arg.len()))
+                        Err(anyhow!(
+                            "Invalid arguments count: {} (expected >=2)",
+                            arg.len()
+                        ))
                     } else {
                         let (key, value) = (&arg[0], &arg[1]);
                         let mut milliseconds = 0;
@@ -255,17 +251,22 @@ impl volo_gen::volo::redis::ItemService for S {
                                 return Err(anyhow!("Duration number not provided."));
                             }
                         }
-                        let command_str = format!("SET {} {} {}\n", key, value, if
-                            milliseconds != 0
-                        {
-                            now() + milliseconds
-                        } else {
-                            0u128
-                        });
-                        self.send_message(command_str).await;println!("xxx");
-                        self.redis
-                            .write().await
-                            .set_after(key.as_ref(), value.as_ref(), milliseconds);
+                        let command_str = format!(
+                            "SET {} {} {}\n",
+                            key,
+                            value,
+                            if milliseconds != 0 {
+                                now() + milliseconds
+                            } else {
+                                0u128
+                            }
+                        );
+                        self.send_message(command_str).await;
+                        self.redis.write().await.set_after(
+                            key.as_ref(),
+                            value.as_ref(),
+                            milliseconds,
+                        );
                         Ok(GetItemResponse {
                             ok: true,
                             data: Some("OK".into()),
@@ -278,7 +279,10 @@ impl volo_gen::volo::redis::ItemService for S {
             RedisCommand::Del => {
                 if let Some(arg) = _req.args {
                     if arg.len() < 1 {
-                        Err(anyhow!("Invalid arguments count: {} (expected >= 1)", arg.len()))
+                        Err(anyhow!(
+                            "Invalid arguments count: {} (expected >= 1)",
+                            arg.len()
+                        ))
                     } else {
                         let mut success: u16 = 0;
                         for key in arg {
@@ -298,13 +302,21 @@ impl volo_gen::volo::redis::ItemService for S {
             RedisCommand::Publish => {
                 if let Some(arg) = _req.args {
                     if arg.len() != 2 {
-                        Err(anyhow!("Invalid arguments count: {} (expected =2)", arg.len()))
+                        Err(anyhow!(
+                            "Invalid arguments count: {} (expected =2)",
+                            arg.len()
+                        ))
                     } else {
                         let (chan, s) = (&arg[0], &arg[1]);
                         Ok(GetItemResponse {
                             ok: true,
                             data: Some(
-                                self.redis.write().await.broadcast(chan, s).to_string().into()
+                                self.redis
+                                    .write()
+                                    .await
+                                    .broadcast(chan, s)
+                                    .to_string()
+                                    .into(),
                             ),
                         })
                     }
@@ -315,13 +327,21 @@ impl volo_gen::volo::redis::ItemService for S {
             RedisCommand::Subscribe => {
                 if let Some(arg) = _req.args {
                     if arg.len() != 1 {
-                        Err(anyhow!("Invalid arguments count: {} (expected =1)", arg.len()))
+                        Err(anyhow!(
+                            "Invalid arguments count: {} (expected =1)",
+                            arg.len()
+                        ))
                     } else {
                         let channel = &arg[0];
                         Ok(GetItemResponse {
                             ok: true,
                             data: Some(
-                                self.redis.write().await.add_subscriber(channel).to_string().into()
+                                self.redis
+                                    .write()
+                                    .await
+                                    .add_subscriber(channel)
+                                    .to_string()
+                                    .into(),
                             ),
                         })
                     }
@@ -332,7 +352,10 @@ impl volo_gen::volo::redis::ItemService for S {
             RedisCommand::Fetch => {
                 if let Some(arg) = _req.args {
                     if arg.len() != 1 {
-                        Err(anyhow!("Invalid arguments count: {} (expected =1)", arg.len()))
+                        Err(anyhow!(
+                            "Invalid arguments count: {} (expected =1)",
+                            arg.len()
+                        ))
                     } else {
                         let handler = arg[0].parse::<usize>()?;
                         let try_query = self.redis.read().await.fetch(handler);
