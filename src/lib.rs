@@ -249,7 +249,7 @@ impl volo_gen::volo::redis::ItemService for S {
                         } else {
                             0u128
                         });
-                        self.send_message(command_str);
+                        self.send_message(command_str).await;
                         println!("xxx");
                         self.redis
                             .write().await
@@ -272,7 +272,7 @@ impl volo_gen::volo::redis::ItemService for S {
                         for key in arg {
                             success += self.redis.write().await.del(key.as_ref()) as u16;
                             let command_str = format!("DEL {:} 0 0\n", key);
-                            self.send_message(command_str);
+                            self.send_message(command_str).await;
                         }
                         Ok(GetItemResponse {
                             ok: true,
