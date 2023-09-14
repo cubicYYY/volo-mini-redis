@@ -5,7 +5,10 @@
 
 
 # echo "开始测试"
+# -- -s "127.0.0.1:8080"
 {
+    echo -n "input args: " > /dev/stderr
+    read -p ''
     read -p $'ping'
     echo -e "ping"
     sleep 1
@@ -35,6 +38,6 @@
     sleep 1
     read -p $'get 1'
     echo -e "get 1"
-} | ./target/debug/client-cli
+} | (./target/debug/client-cli )
 #| ./target/debug/client-cli
 

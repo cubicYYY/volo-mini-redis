@@ -1,5 +1,8 @@
 #!/bin/bash
+# -- -s "127.0.0.1:8080
 {
+    echo -n "input args: " > /dev/stderr
+    read -p ''
     read -p $'multi'
     echo -e "multi"
     sleep 1
@@ -10,7 +13,6 @@
     read -p $"set 2 321 -t $t_id"
     echo -e "set 2 321  -t $t_id"
     sleep 1
-    #get 2 var
     read -p $"get 2 -t $t_id"
     echo -e "get 2 -t $t_id"
     sleep 1
@@ -19,5 +21,5 @@
     sleep 1
     read -p $'exec'
     echo -e "exec"
-    read 
+    read
 } | ./target/debug/client-cli

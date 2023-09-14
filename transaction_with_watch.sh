@@ -1,5 +1,8 @@
 #!/bin/bash
+# -- -s "127.0.0.1:8080
 {
+    echo -n "input args: " > /dev/stderr
+    read -p ''
     read -p $'multi'
     echo -e "multi"
     sleep 1
