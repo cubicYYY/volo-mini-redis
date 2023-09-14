@@ -7,27 +7,22 @@ use redis::Timestamp;
 use std::{
     fs::{ File, OpenOptions },
     io::{ BufRead, BufReader, Seek, SeekFrom, Write },
-    sync::mpsc,
+    // sync::mpsc,
     thread,
     time::{ Duration, Instant, SystemTime, UNIX_EPOCH },
 };
-use tokio::{ sync::RwLock, signal };
+use tokio::{ sync::RwLock, signal, sync::mpsc };
 use volo_gen::volo::redis::RedisCommand;
-use lazy_static::lazy_static;
 use std::sync::{ Arc, Mutex };
-lazy_static! {
-    static ref CTRL_C: Arc<RwLock<bool>> = Arc::new(RwLock::new(false));
-}
 pub struct S {
     pub redis: RwLock<redis::Redis>,
     sender: mpsc::Sender<String>,
 }
-
 impl S {
     pub fn new() -> S {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, mut receiver) = mpsc::channel(100);
         // Spawn a thread to handle received messages
-        thread::spawn(move || {
+        tokio::spawn(async move {
             let mut command: Vec<String> = Vec::new();
             let mut aof_file = OpenOptions::new()
                 .append(true)
@@ -48,8 +43,8 @@ impl S {
                     aof_file.flush().expect("Failed to flush file");
                     println!("COMMAND SAVED!!");
                 };
-                match receiver.recv_timeout(Duration::from_secs(1)) {
-                    std::result::Result::Ok(msg) => {
+                match receiver.recv().await {
+                    Some(msg) => {
                         command.push(msg);
                         // 检查是否距上次写入已经过去了 1 秒
                         if last_write_time.elapsed() >= Duration::from_secs(1) {
@@ -58,7 +53,7 @@ impl S {
                             last_write_time = Instant::now();
                         }
                     }
-                    Err(_) => {
+                    None => {
                         flush(&command);
                         command.clear();
                         last_write_time = Instant::now();
@@ -71,8 +66,8 @@ impl S {
             sender,
         }
     }
-    fn send_message(&self, msg: String) {
-        self.sender.send(msg).unwrap();
+    async fn send_message(&self, msg: String) {
+        self.sender.send(msg).await;
     }
 }
 
@@ -172,18 +167,18 @@ impl volo_gen::volo::redis::ItemService for S {
         volo_gen::volo::redis::GetItemResponse,
         ::volo_thrift::AnyhowError
     > {
-        {
-            let ctrl_c = CTRL_C.read().await;
-            if *ctrl_c {
-                return Err(anyhow!("Server is shutting").into());
-            }
-        }
-        let shared_data = Arc::new(Mutex::new(false));
-        let shared_data_clone = Arc::clone(&shared_data);
-        volo::spawn(async move {
-            let _ = signal::ctrl_c().await;
-            *shared_data_clone.lock().unwrap() = true;
-        });
+        // {
+        //     let ctrl_c = CTRL_C.read().await;
+        //     if *ctrl_c {
+        //         return Err(anyhow!("Server is shutting").into());
+        //     }
+        // }
+        // let shared_data = Arc::new(Mutex::new(false));
+        // let shared_data_clone = Arc::clone(&shared_data);
+        // volo::spawn(async move {
+        //     let _ = signal::ctrl_c().await;
+        //     *shared_data_clone.lock().unwrap() = true;
+        // });
         use volo_gen::volo::redis::GetItemResponse;
         let response = match _req.cmd {
             RedisCommand::Ping => {
@@ -353,16 +348,16 @@ impl volo_gen::volo::redis::ItemService for S {
                 }
             }
         };
-        {
-            let ctrl_c = CTRL_C.read().await;
-            if *ctrl_c {
-                thread::sleep(Duration::from_secs(2));
-            } else if *shared_data.lock().unwrap() {
-                let mut ctrl_c = CTRL_C.write().await;
-                *ctrl_c = true;
-                thread::sleep(Duration::from_secs(2));
-            }
-        }
+        // {
+        //     let ctrl_c = CTRL_C.read().await;
+        //     if *ctrl_c {
+        //         thread::sleep(Duration::from_secs(2));
+        //     } else if *shared_data.lock().unwrap() {
+        //         let mut ctrl_c = CTRL_C.write().await;
+        //         *ctrl_c = true;
+        //         thread::sleep(Duration::from_secs(2));
+        //     }
+        // }
         return response;
     }
 }
