@@ -1053,6 +1053,7 @@ dependencies = [
  "clap",
  "colored",
  "lazy_static",
+ "nanoid",
  "parking_lot 0.12.1",
  "pilota",
  "rand",
@@ -1123,6 +1124,15 @@ name = "mur3"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "97af489e1e21b68de4c390ecca6703318bc1aa16e9733bcb62c089b73c6fbb1b"
+
+[[package]]
+name = "nanoid"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ffa00dec017b5b1a8b7cf5e2c008bfda1aa7e0697ac1508b491fdf2622fb4d8"
+dependencies = [
+ "rand",
+]
 
 [[package]]
 name = "nibble_vec"

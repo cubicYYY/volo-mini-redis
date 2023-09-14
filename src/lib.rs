@@ -5,9 +5,12 @@ mod redis;
 use anyhow::{anyhow, Ok};
 use clap::{self, Parser};
 use lazy_static::lazy_static;
+use nanoid::nanoid;
 use rand::distributions::Alphanumeric;
 use rand::Rng;
 use redis::Timestamp;
+use std::collections::HashMap;
+use std::f32::consts::E;
 use std::sync::Arc;
 use std::{
     fs::{File, OpenOptions},
@@ -17,10 +20,13 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::mpsc;
-use tokio::{signal, sync::Mutex};
+use tokio::{
+    signal,
+    sync::{Mutex, RwLock},
+};
 use tracing::info;
 use uuid::Uuid;
-use volo_gen::volo::redis::RedisCommand;
+use volo_gen::volo::redis::{GetItemRequest, GetItemResponse, MultiGetItemResponse, RedisCommand};
 
 pub type Host = String;
 pub type Port = u32;
@@ -77,6 +83,12 @@ lazy_static! {
             .address(addr)
             .build()
     };
+    //transaction id match the commands in the transaction
+    pub static ref TRANSACTION_HASHMAP: Arc<RwLock<HashMap<String, Transaction>>> = Arc::new(RwLock::new(HashMap::new()));
+    //key match the transaction pair with the value of the key
+    pub static ref TRANSACTION_WATCHER: Arc<RwLock<HashMap<String, HashMap<String, Option<String>>>>> = Arc::new(RwLock::new(HashMap::new()));
+    //keys a transaction is watching
+    pub static ref KEY_WATCHED: Arc<RwLock<HashMap<String, Vec<String>>>> = Arc::new(RwLock::new(HashMap::new()));
 }
 
 type ArwLock<T> = Arc<Mutex<T>>;
@@ -85,6 +97,11 @@ pub struct S {
     sender: mpsc::Sender<String>,
     state: ArwLock<RedisState>,
     uuid: Uuid,
+}
+
+pub struct Transaction {
+    pub commands: Vec<GetItemRequest>,
+    pub is_wrong: bool,
 }
 
 impl S {
@@ -250,6 +267,7 @@ impl volo_gen::volo::redis::ItemService for S {
         use volo_gen::volo::redis::GetItemResponse;
         let response = match _req.cmd {
             RedisCommand::Ping => {
+                tokio::time::sleep(Duration::from_secs(10)).await;
                 if let Some(arg) = _req.args {
                     let ans = if arg.len() == 0 {
                         "pong".into()
@@ -268,80 +286,113 @@ impl volo_gen::volo::redis::ItemService for S {
                 }
             }
             RedisCommand::Get => {
-                if _req.args.is_none() {
-                    return Err(anyhow!("No arguments given (required)"));
+                let get_transaction_id = _req.transaction_id.clone();
+                if let Some(t_id) = get_transaction_id {
+                    let mut transactions = TRANSACTION_HASHMAP.write().await;
+                    //check if there is an transaction with the given id
+                    if transactions.contains_key(&t_id.to_string()) {
+                        let mut transaction = transactions.get_mut(&t_id.to_string()).unwrap();
+                        info!("{:?}", &_req);
+                        transaction.commands.push(_req.clone());
+                        return Ok(GetItemResponse {
+                            ok: true,
+                            data: Some("OK".into()),
+                        });
+                    } else {
+                        return Err(anyhow!("Transaction not found"));
+                    }
                 }
-                let arg = _req.args.unwrap();
-                if arg.len() != 1 {
-                    return Err(anyhow!(
-                        "Invalid arguments count: {} (expected 1)",
-                        arg.len()
-                    ));
-                }
-                if let Some(value) = self.redis.lock().await.get(arg[0].as_ref()) {
-                    Ok(GetItemResponse {
-                        ok: true,
-                        data: Some(value.into()),
-                    })
+                if let Some(arg) = &_req.args {
+                    if arg.len() != 1 {
+                        Err(anyhow!(
+                            "Invalid arguments count: {} (expected 1)",
+                            arg.len()
+                        ))
+                    } else {
+                        if let Some(value) = self.redis.lock().await.get(arg[0].as_ref()) {
+                            Ok(GetItemResponse {
+                                ok: true,
+                                data: Some(value.into()),
+                            })
+                        } else {
+                            Ok(GetItemResponse {
+                                ok: false,
+                                data: None,
+                            })
+                        }
+                    }
                 } else {
-                    Ok(GetItemResponse {
-                        ok: false,
-                        data: None,
-                    })
+                    Err(anyhow!("No arguments given (required)"))
                 }
             }
             RedisCommand::Set => {
-                if _req.args.is_none() {
-                    return Err(anyhow!("No arguments given (required)"));
+                let set_transaction_id = _req.transaction_id.clone();
+                if let Some(t_id) = set_transaction_id {
+                    let mut transactions = TRANSACTION_HASHMAP.write().await;
+                    //check if there is an transaction with the given id
+                    if transactions.contains_key(&t_id.to_string()) {
+                        let mut transaction = transactions.get_mut(&t_id.to_string()).unwrap();
+                        transaction.commands.push(_req.clone());
+                        return Ok(GetItemResponse {
+                            ok: true,
+                            data: Some("OK".into()),
+                        });
+                    } else {
+                        return Err(anyhow!("Transaction not found"));
+                    }
                 }
-                let arg = _req.args.unwrap();
-                if arg.len() < 2 {
-                    return Err(anyhow!(
-                        "Invalid arguments count: {} (expected >=2)",
-                        arg.len()
-                    ));
-                }
-                let (key, value) = (&arg[0], &arg[1]);
-                let mut milliseconds = 0;
-                if let Some(exp_type) = arg.get(2) {
-                    if let Some(exp_num) = arg.get(3) {
-                        let exp_after = exp_num.parse::<u128>()?;
+                if let Some(arg) = _req.args {
+                    if arg.len() < 2 {
+                        Err(anyhow!(
+                            "Invalid arguments count: {} (expected >=2)",
+                            arg.len()
+                        ))
+                    } else {
+                        let (key, value) = (&arg[0], &arg[1]);
+                        let mut milliseconds = 0;
+                        if let Some(exp_type) = arg.get(2) {
+                            if let Some(exp_num) = arg.get(3) {
+                                let exp_after = exp_num.parse::<u128>()?;
 
-                        match exp_type.to_lowercase().as_ref() {
-                            "ex" => {
-                                milliseconds = exp_after * 1000;
-                            }
-                            "px" => {
-                                milliseconds = exp_after;
-                            }
-                            _ => {
-                                return Err(anyhow!("Unsupported time type `{exp_type}`"));
+                                match exp_type.to_lowercase().as_ref() {
+                                    "ex" => {
+                                        milliseconds = exp_after * 1000;
+                                    }
+                                    "px" => {
+                                        milliseconds = exp_after;
+                                    }
+                                    _ => {
+                                        return Err(anyhow!("Unsupported time type `{exp_type}`"));
+                                    }
+                                }
+                            } else {
+                                return Err(anyhow!("Duration number not provided."));
                             }
                         }
-                    } else {
-                        return Err(anyhow!("Duration number not provided."));
+                        let command_str = format!(
+                            "SET {} {} {}\n",
+                            key,
+                            value,
+                            if milliseconds != 0 {
+                                now() + milliseconds
+                            } else {
+                                0u128
+                            }
+                        );
+                        self.send_message(command_str).await;
+                        self.redis.lock().await.set_after(
+                            key.as_ref(),
+                            value.as_ref(),
+                            milliseconds,
+                        );
+                        Ok(GetItemResponse {
+                            ok: true,
+                            data: Some("OK".into()),
+                        })
                     }
+                } else {
+                    Err(anyhow!("No arguments given (required)"))
                 }
-                let command_str = format!(
-                    "SET {} {} {}\n",
-                    key,
-                    value,
-                    if milliseconds != 0 {
-                        now() + milliseconds
-                    } else {
-                        0u128
-                    }
-                );
-                self.send_message(command_str).await;
-                println!("xxx");
-                self.redis
-                    .lock()
-                    .await
-                    .set_after(key.as_ref(), value.as_ref(), milliseconds);
-                Ok(GetItemResponse {
-                    ok: true,
-                    data: Some("OK".into()),
-                })
             }
             RedisCommand::Del => {
                 if _req.args.is_none() {
@@ -461,6 +512,7 @@ impl volo_gen::volo::redis::ItemService for S {
                     .get_item(volo_gen::volo::redis::GetItemRequest {
                         cmd: RedisCommand::Sync,
                         args: None,
+                        transaction_id: None,
                     })
                     .await?;
                 if !resp.ok || resp.data.is_none() {
@@ -505,6 +557,267 @@ impl volo_gen::volo::redis::ItemService for S {
             RedisCommand::ClusterCreate => {
                 unimplemented!()
             }
+            RedisCommand::Multi => {
+                //generate a nanoid as transaction id make sure it is not a key in the Transaction hashmap
+                let mut transaction_id = nanoid!(5);
+                while TRANSACTION_HASHMAP
+                    .read()
+                    .await
+                    .contains_key(&transaction_id)
+                {
+                    transaction_id = nanoid!(5);
+                }
+                TRANSACTION_HASHMAP.write().await.insert(
+                    transaction_id.clone(),
+                    Transaction {
+                        commands: Vec::new(),
+                        is_wrong: false,
+                    },
+                );
+                Ok(GetItemResponse {
+                    ok: true,
+                    data: Some(transaction_id.into()),
+                })
+            }
+            RedisCommand::Watch => {
+                if let Some(arg) = &_req.args {
+                    let watch_key = arg[0].clone().to_string();
+                    let watch_transaction_id = _req.transaction_id.clone().unwrap().to_string();
+                    let mut transaction_watcher = TRANSACTION_WATCHER.write().await;
+                    let mut key_watched = KEY_WATCHED.write().await;
+                    let mut transactions_watched_the_key = if key_watched.contains_key(&watch_key) {
+                        key_watched.get_mut(&watch_key).unwrap()
+                    } else {
+                        let mut transactions = Vec::new();
+                        key_watched.insert(watch_key.clone(), transactions);
+                        key_watched.get_mut(&watch_key).unwrap()
+                    };
+                    let match_value = self.redis.lock().await.get(watch_key.as_ref());
+                    //transaction_watcher is key map the watching transaction id and the value of the key
+                    let response = if transaction_watcher.contains_key(&watch_key) {
+                        let mut watch_pair = transaction_watcher.get_mut(&watch_key).unwrap();
+                        if watch_pair.contains_key(&watch_transaction_id) {
+                            Err(anyhow!("Transaction already watched"))
+                        } else {
+                            watch_pair.insert(watch_transaction_id.clone(), match_value.clone());
+                            transactions_watched_the_key.push(watch_transaction_id.clone());
+                            Ok(GetItemResponse {
+                                ok: true,
+                                data: Some("OK".into()),
+                            })
+                        }
+                    } else {
+                        let mut watch_pair = HashMap::new();
+                        watch_pair.insert(watch_transaction_id.clone(), match_value.clone());
+                        transaction_watcher.insert(watch_key.clone(), watch_pair);
+                        transactions_watched_the_key.push(watch_transaction_id.clone());
+                        Ok(GetItemResponse {
+                            ok: true,
+                            data: Some("OK".into()),
+                        })
+                    };
+                    response
+                } else {
+                    Err(anyhow!("No arguments given (required)"))
+                }
+            }
+            RedisCommand::Sync => {
+                let curr_state = self.state.lock().await;
+                if let RedisState::Single = *curr_state {
+                    return Err(anyhow!(
+                        "SYNC is not supported in this state: `{}`.",
+                        *curr_state
+                    ));
+                }
+                let arg = _req.args.unwrap();
+                if arg.len() != 0 {
+                    return Err(anyhow!(
+                        "Invalid arguments count: {} (expected =0)",
+                        arg.len()
+                    ));
+                }
+                let data = self.redis.lock().await.serialize();
+                Ok(GetItemResponse {
+                    ok: true,
+                    data: Some(String::from_utf8(data).unwrap().into()),
+                })
+            }
+            RedisCommand::ClusterMeet => {
+                unimplemented!()
+            }
+            RedisCommand::ClusterAddSlots => {
+                unimplemented!()
+            }
+            RedisCommand::ClusterCreate => {
+                unimplemented!()
+            }
+            _ => Err(anyhow!("Unsupported command")),
+        };
+        {
+            {
+                let ctrl_c = CTRL_C.lock().await;
+                if *ctrl_c {
+                    self.send_message("SHUTDOWN".to_string()).await;
+                }
+            }
+            if *shared_data.lock().await {
+                self.send_message("SHUTDOWN".to_string()).await;
+                let mut ctrl_c = CTRL_C.lock().await;
+                *ctrl_c = true;
+                info!("New requests rejected whe shutting down.");
+            }
+        }
+        let _ = child.abort();
+        return response;
+    }
+
+    async fn exec(
+        &self,
+        _req: volo_gen::volo::redis::GetItemRequest,
+    ) -> ::core::result::Result<
+        volo_gen::volo::redis::MultiGetItemResponse,
+        ::volo_thrift::AnyhowError,
+    > {
+        info!("deal with exec");
+        {
+            let ctrl_c = CTRL_C.lock().await;
+            if *ctrl_c {
+                return Err(anyhow!("Server is shutting").into());
+            }
+        }
+        let shared_data = Arc::new(Mutex::new(false));
+        let shared_data_clone = Arc::clone(&shared_data);
+        let child = volo::spawn(async move {
+            let _ = signal::ctrl_c().await;
+            info!("Ctrl-C received, shutting down");
+            *shared_data_clone.lock().await = true;
+        });
+        let response = match _req.cmd {
+            RedisCommand::Exec => {
+                let transaction_id = _req.transaction_id.unwrap();
+                let mut transactions = TRANSACTION_HASHMAP.write().await;
+                let mut transaction = transactions.get_mut(&transaction_id.to_string()).unwrap();
+                let mut transaction_watcher = TRANSACTION_WATCHER.write().await;
+                let key_watched = KEY_WATCHED.read().await;
+                info!("dealing with checking");
+                for key in key_watched.keys() {
+                    if transaction_watcher.contains_key(key) {
+                        let mut watch_pair = transaction_watcher.get_mut(&key.clone()).unwrap();
+                        let old_value = watch_pair.get(&transaction_id.to_string()).unwrap();
+                        let new_value = self.redis.lock().await.get(key.as_ref());
+                        if old_value.to_owned() != new_value {
+                            transaction.is_wrong = true;
+                            break;
+                        }
+                    }
+                }
+                info!("checking done");
+                if transaction.is_wrong {
+                    Err(anyhow!("Transaction is wrong"))
+                } else {
+                    let mut responses = Vec::new();
+                    for command in transaction.commands.iter() {
+                        let resp = match command.cmd {
+                            RedisCommand::Set => {
+                                info!("deal with set");
+                                if let Some(arg) = &command.args {
+                                    if arg.len() < 2 {
+                                        Err(anyhow!(
+                                            "Invalid arguments count: {} (expected >=2)",
+                                            arg.len()
+                                        ))
+                                    } else {
+                                        let (key, value) = (&arg[0], &arg[1]);
+                                        let mut milliseconds = 0;
+                                        if let Some(exp_type) = arg.get(2) {
+                                            if let Some(exp_num) = arg.get(3) {
+                                                let exp_after = exp_num.parse::<u128>()?;
+
+                                                match exp_type.to_lowercase().as_ref() {
+                                                    "ex" => {
+                                                        milliseconds = exp_after * 1000;
+                                                    }
+                                                    "px" => {
+                                                        milliseconds = exp_after;
+                                                    }
+                                                    _ => {
+                                                        return Err(anyhow!(
+                                                            "Unsupported time type `{exp_type}`"
+                                                        ));
+                                                    }
+                                                }
+                                            } else {
+                                                return Err(anyhow!(
+                                                    "Duration number not provided."
+                                                ));
+                                            }
+                                        }
+                                        let command_str = format!(
+                                            "SET {} {} {}\n",
+                                            key,
+                                            value,
+                                            if milliseconds != 0 {
+                                                now() + milliseconds
+                                            } else {
+                                                0u128
+                                            }
+                                        );
+                                        self.send_message(command_str).await;
+                                        self.redis.lock().await.set_after(
+                                            key.as_ref(),
+                                            value.as_ref(),
+                                            milliseconds,
+                                        );
+                                        Ok(GetItemResponse {
+                                            ok: true,
+                                            data: Some("OK".into()),
+                                        })
+                                    }
+                                } else {
+                                    Err(anyhow!("No arguments given (required)"))
+                                }
+                            }
+                            RedisCommand::Get => {
+                                info!("deal with get");
+                                if let Some(arg) = &command.args {
+                                    if arg.len() != 1 {
+                                        Err(anyhow!(
+                                            "Invalid arguments count: {} (expected 1)",
+                                            arg.len()
+                                        ))
+                                    } else {
+                                        if let Some(value) =
+                                            self.redis.lock().await.get(arg[0].as_ref())
+                                        {
+                                            Ok(GetItemResponse {
+                                                ok: true,
+                                                data: Some(value.into()),
+                                            })
+                                        } else {
+                                            Ok(GetItemResponse {
+                                                ok: false,
+                                                data: None,
+                                            })
+                                        }
+                                    }
+                                } else {
+                                    info!("{:?}", &_req.args);
+                                    Err(anyhow!("No arguments given (required)"))
+                                }
+                            }
+                            _ => Err(anyhow!("Unsupported command")),
+                        };
+                        responses.push(resp.unwrap());
+                    }
+                    transactions.remove(&transaction_id.to_string());
+                    info!("exec done with {:?}", responses);
+                    Ok(MultiGetItemResponse {
+                        ok: true,
+                        data: Some(responses),
+                    })
+                }
+            }
+            _ => Err(anyhow!("Unsupported command")),
         };
         {
             {
