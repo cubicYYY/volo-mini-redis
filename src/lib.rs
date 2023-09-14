@@ -43,22 +43,23 @@ impl S {
                     aof_file.flush().expect("Failed to flush file");
                     println!("COMMAND SAVED!!");
                 };
-                match receiver.recv().await {
-                    Some(msg) => {
+                match receiver.try_recv() {
+                    std::result::Result::Ok(msg) => {
                         command.push(msg);
                         // 检查是否距上次写入已经过去了 1 秒
-                        if last_write_time.elapsed() >= Duration::from_secs(1) {
+                        if  last_write_time.elapsed() >= Duration::from_secs(1) {
                             flush(&command);
                             command.clear();
                             last_write_time = Instant::now();
                         }
                     }
-                    None => {
+                    Err(_) => {
                         flush(&command);
                         command.clear();
                         last_write_time = Instant::now();
                     }
                 }
+
             }
         });
         S {
@@ -249,8 +250,7 @@ impl volo_gen::volo::redis::ItemService for S {
                         } else {
                             0u128
                         });
-                        self.send_message(command_str).await;
-                        println!("xxx");
+                        self.send_message(command_str).await;println!("xxx");
                         self.redis
                             .write().await
                             .set_after(key.as_ref(), value.as_ref(), milliseconds);
