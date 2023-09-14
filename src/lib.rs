@@ -2,21 +2,15 @@
 
 mod redis;
 
-use anyhow::{ anyhow, Ok };
+use anyhow::{ anyhow, Ok, Error };
 use redis::Timestamp;
 use tracing::info;
-use std::{
-    fs::{ File, OpenOptions },
-    io::{ BufRead, BufReader, Seek, SeekFrom, Write },
-    // sync::mpsc,
-    thread,
-    time::{ Duration, Instant, SystemTime, UNIX_EPOCH },
-};
+use std::{ fs::OpenOptions, io::Write, time::{ Duration, Instant, SystemTime, UNIX_EPOCH } };
 use tokio::{ sync::RwLock, signal, sync::mpsc };
-use volo_gen::volo::redis::RedisCommand;
+use volo_gen::volo::redis::{ RedisCommand, GetItemResponse };
 use std::sync::{ Arc, Mutex };
 pub struct S {
-    pub redis: RwLock<redis::Redis>,
+    pub redis: Arc<RwLock<redis::Redis>>,
     sender: mpsc::Sender<String>,
 }
 lazy_static::lazy_static! {
@@ -70,7 +64,7 @@ impl S {
             }
         });
         S {
-            redis: RwLock::new(redis::Redis::new()),
+            redis: Arc::new(RwLock::new(redis::Redis::new())),
             sender,
         }
     }
@@ -175,187 +169,203 @@ impl volo_gen::volo::redis::ItemService for S {
         volo_gen::volo::redis::GetItemResponse,
         ::volo_thrift::AnyhowError
     > {
-        {
-            let ctrl_c = CTRL_C.read().await;
-            if *ctrl_c {
-                return Err(anyhow!("Server is shutting").into());
-            }
-        }
-        let shared_data = Arc::new(Mutex::new(false));
-        let shared_data_clone = Arc::clone(&shared_data);
-        volo::spawn(async move {
-            let _ = signal::ctrl_c().await;
-            info!("Ctrl-C received, shutting down");
-            *shared_data_clone.lock().unwrap() = true;
-        });
-        use volo_gen::volo::redis::GetItemResponse;
-        let response = match _req.cmd {
-            RedisCommand::Ping => {
-                tokio::time::sleep(Duration::from_secs(10)).await;
-                if let Some(arg) = _req.args {
-                    let ans = if arg.len() == 0 { "pong".into() } else { arg.join(" ").into() };
-                    Ok(GetItemResponse {
-                        ok: true,
-                        data: Some(ans),
-                    })
-                } else {
-                    Ok(GetItemResponse {
-                        ok: true,
-                        data: Some("pong".into()),
-                    })
+        let sender_clone = self.sender.clone();
+        let redis_clone = self.redis.clone();
+        let handle = volo::spawn(async move {
+            volo::spawn(async move {});
+            {
+                let ctrl_c = CTRL_C.read().await;
+                if *ctrl_c {
+                    return Err(anyhow!("Server is shutting").into());
                 }
             }
-            RedisCommand::Get => {
-                if let Some(arg) = _req.args {
-                    if arg.len() != 1 {
-                        Err(anyhow!("Invalid arguments count: {} (expected 1)", arg.len()))
+            let shared_data = Arc::new(Mutex::new(false));
+            let shared_data_clone = Arc::clone(&shared_data);
+            volo::spawn(async move {
+                let _ = signal::ctrl_c().await;
+                info!("Ctrl-C received, shutting down");
+                *shared_data_clone.lock().unwrap() = true;
+            });
+            use volo_gen::volo::redis::GetItemResponse;
+            let response = match _req.cmd {
+                RedisCommand::Ping => {
+                    tokio::time::sleep(Duration::from_secs(100)).await;
+                    if let Some(arg) = _req.args {
+                        let ans = if arg.len() == 0 { "pong".into() } else { arg.join(" ").into() };
+                        Ok(GetItemResponse {
+                            ok: true,
+                            data: Some(ans),
+                        })
                     } else {
-                        if let Some(value) = self.redis.write().await.get(arg[0].as_ref()) {
-                            Ok(GetItemResponse {
-                                ok: true,
-                                data: Some(value.into()),
-                            })
-                        } else {
-                            Ok(GetItemResponse {
-                                ok: false,
-                                data: None,
-                            })
-                        }
+                        Ok(GetItemResponse {
+                            ok: true,
+                            data: Some("pong".into()),
+                        })
                     }
-                } else {
-                    Err(anyhow!("No arguments given (required)"))
                 }
-            }
-            RedisCommand::Set => {
-                if let Some(arg) = _req.args {
-                    if arg.len() < 2 {
-                        Err(anyhow!("Invalid arguments count: {} (expected >=2)", arg.len()))
-                    } else {
-                        let (key, value) = (&arg[0], &arg[1]);
-                        let mut milliseconds = 0;
-                        if let Some(exp_type) = arg.get(2) {
-                            if let Some(exp_num) = arg.get(3) {
-                                let exp_after = exp_num.parse::<u128>()?;
-
-                                match exp_type.to_lowercase().as_ref() {
-                                    "ex" => {
-                                        milliseconds = exp_after * 1000;
-                                    }
-                                    "px" => {
-                                        milliseconds = exp_after;
-                                    }
-                                    _ => {
-                                        return Err(anyhow!("Unsupported time type `{exp_type}`"));
-                                    }
-                                }
+                RedisCommand::Get => {
+                    if let Some(arg) = _req.args {
+                        if arg.len() != 1 {
+                            Err(anyhow!("Invalid arguments count: {} (expected 1)", arg.len()))
+                        } else {
+                            if let Some(value) = redis_clone.write().await.get(arg[0].as_ref()) {
+                                Ok(GetItemResponse {
+                                    ok: true,
+                                    data: Some(value.into()),
+                                })
                             } else {
-                                return Err(anyhow!("Duration number not provided."));
+                                Ok(GetItemResponse {
+                                    ok: false,
+                                    data: None,
+                                })
                             }
                         }
-                        let command_str = format!("SET {} {} {}\n", key, value, if
-                            milliseconds != 0
-                        {
-                            now() + milliseconds
+                    } else {
+                        Err(anyhow!("No arguments given (required)"))
+                    }
+                }
+                RedisCommand::Set => {
+                    if let Some(arg) = _req.args {
+                        if arg.len() < 2 {
+                            Err(anyhow!("Invalid arguments count: {} (expected >=2)", arg.len()))
                         } else {
-                            0u128
-                        });
-                        self.send_message(command_str).await;
-                        println!("xxx");
-                        self.redis
-                            .write().await
-                            .set_after(key.as_ref(), value.as_ref(), milliseconds);
-                        Ok(GetItemResponse {
-                            ok: true,
-                            data: Some("OK".into()),
-                        })
-                    }
-                } else {
-                    Err(anyhow!("No arguments given (required)"))
-                }
-            }
-            RedisCommand::Del => {
-                if let Some(arg) = _req.args {
-                    if arg.len() < 1 {
-                        Err(anyhow!("Invalid arguments count: {} (expected >= 1)", arg.len()))
-                    } else {
-                        let mut success: u16 = 0;
-                        for key in arg {
-                            success += self.redis.write().await.del(key.as_ref()) as u16;
-                            let command_str = format!("DEL {:} 0 0\n", key);
-                            self.send_message(command_str).await;
-                        }
-                        Ok(GetItemResponse {
-                            ok: true,
-                            data: Some(success.to_string().into()),
-                        })
-                    }
-                } else {
-                    Err(anyhow!("No arguments given (required)"))
-                }
-            }
-            RedisCommand::Publish => {
-                if let Some(arg) = _req.args {
-                    if arg.len() != 2 {
-                        Err(anyhow!("Invalid arguments count: {} (expected =2)", arg.len()))
-                    } else {
-                        let (chan, s) = (&arg[0], &arg[1]);
-                        Ok(GetItemResponse {
-                            ok: true,
-                            data: Some(
-                                self.redis.write().await.broadcast(chan, s).to_string().into()
-                            ),
-                        })
-                    }
-                } else {
-                    Err(anyhow!("No arguments given (required)"))
-                }
-            }
-            RedisCommand::Subscribe => {
-                if let Some(arg) = _req.args {
-                    if arg.len() != 1 {
-                        Err(anyhow!("Invalid arguments count: {} (expected =1)", arg.len()))
-                    } else {
-                        let channel = &arg[0];
-                        Ok(GetItemResponse {
-                            ok: true,
-                            data: Some(
-                                self.redis.write().await.add_subscriber(channel).to_string().into()
-                            ),
-                        })
-                    }
-                } else {
-                    Err(anyhow!("No arguments given (required)"))
-                }
-            }
-            RedisCommand::Fetch => {
-                if let Some(arg) = _req.args {
-                    if arg.len() != 1 {
-                        Err(anyhow!("Invalid arguments count: {} (expected =1)", arg.len()))
-                    } else {
-                        let handler = arg[0].parse::<usize>()?;
-                        let try_query = self.redis.read().await.fetch(handler);
-                        Ok(GetItemResponse {
-                            ok: try_query.is_ok(),
-                            data: if try_query.is_ok() {
-                                Some(try_query.expect("").into())
+                            let (key, value) = (&arg[0], &arg[1]);
+                            let mut milliseconds = 0;
+                            if let Some(exp_type) = arg.get(2) {
+                                if let Some(exp_num) = arg.get(3) {
+                                    let exp_after = exp_num.parse::<u128>()?;
+
+                                    match exp_type.to_lowercase().as_ref() {
+                                        "ex" => {
+                                            milliseconds = exp_after * 1000;
+                                        }
+                                        "px" => {
+                                            milliseconds = exp_after;
+                                        }
+                                        _ => {
+                                            return Err(
+                                                anyhow!("Unsupported time type `{exp_type}`")
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    return Err(anyhow!("Duration number not provided."));
+                                }
+                            }
+                            let command_str = format!("SET {} {} {}\n", key, value, if
+                                milliseconds != 0
+                            {
+                                now() + milliseconds
                             } else {
-                                None
-                            },
-                        })
+                                0u128
+                            });
+                            sender_clone.send(command_str).await;
+                            println!("xxx");
+                            redis_clone
+                                .write().await
+                                .set_after(key.as_ref(), value.as_ref(), milliseconds);
+                            Ok(GetItemResponse {
+                                ok: true,
+                                data: Some("OK".into()),
+                            })
+                        }
+                    } else {
+                        Err(anyhow!("No arguments given (required)"))
                     }
-                } else {
-                    Err(anyhow!("No arguments given (required)"))
+                }
+                RedisCommand::Del => {
+                    if let Some(arg) = _req.args {
+                        if arg.len() < 1 {
+                            Err(anyhow!("Invalid arguments count: {} (expected >= 1)", arg.len()))
+                        } else {
+                            let mut success: u16 = 0;
+                            for key in arg {
+                                success += redis_clone.write().await.del(key.as_ref()) as u16;
+                                let command_str = format!("DEL {:} 0 0\n", key);
+                                sender_clone.send(command_str).await;
+                            }
+                            Ok(GetItemResponse {
+                                ok: true,
+                                data: Some(success.to_string().into()),
+                            })
+                        }
+                    } else {
+                        Err(anyhow!("No arguments given (required)"))
+                    }
+                }
+                RedisCommand::Publish => {
+                    if let Some(arg) = _req.args {
+                        if arg.len() != 2 {
+                            Err(anyhow!("Invalid arguments count: {} (expected =2)", arg.len()))
+                        } else {
+                            let (chan, s) = (&arg[0], &arg[1]);
+                            Ok(GetItemResponse {
+                                ok: true,
+                                data: Some(
+                                    redis_clone.write().await.broadcast(chan, s).to_string().into()
+                                ),
+                            })
+                        }
+                    } else {
+                        Err(anyhow!("No arguments given (required)"))
+                    }
+                }
+                RedisCommand::Subscribe => {
+                    if let Some(arg) = _req.args {
+                        if arg.len() != 1 {
+                            Err(anyhow!("Invalid arguments count: {} (expected =1)", arg.len()))
+                        } else {
+                            let channel = &arg[0];
+                            Ok(GetItemResponse {
+                                ok: true,
+                                data: Some(
+                                    redis_clone
+                                        .write().await
+                                        .add_subscriber(channel)
+                                        .to_string()
+                                        .into()
+                                ),
+                            })
+                        }
+                    } else {
+                        Err(anyhow!("No arguments given (required)"))
+                    }
+                }
+                RedisCommand::Fetch => {
+                    if let Some(arg) = _req.args {
+                        if arg.len() != 1 {
+                            Err(anyhow!("Invalid arguments count: {} (expected =1)", arg.len()))
+                        } else {
+                            let handler = arg[0].parse::<usize>()?;
+                            let try_query = redis_clone.read().await.fetch(handler);
+                            Ok(GetItemResponse {
+                                ok: try_query.is_ok(),
+                                data: if try_query.is_ok() {
+                                    Some(try_query.expect("").into())
+                                } else {
+                                    None
+                                },
+                            })
+                        }
+                    } else {
+                        Err(anyhow!("No arguments given (required)"))
+                    }
+                }
+            };
+            {
+                let ctrl_c = CTRL_C.read().await;
+                if *ctrl_c {
+                    sender_clone.send("SHUTDOWN".to_string()).await;
+                } else if *shared_data.lock().unwrap() {
+                    sender_clone.send("SHUTDOWN".to_string()).await;
                 }
             }
-        };
-        {
-            let ctrl_c = CTRL_C.read().await;
-            if *ctrl_c {
-                self.send_message("SHUTDOWN".to_string()).await;
-            } else if *shared_data.lock().unwrap() {
-                self.send_message("SHUTDOWN".to_string()).await;
-            }
+            return response;
+        });
+        let result = handle.await;
+        match result {
+            std::result::Result::Ok(r) => r,
+            Err(e) => Err(anyhow!("{:?}", e).into()),
         }
-        return response;
     }
 }

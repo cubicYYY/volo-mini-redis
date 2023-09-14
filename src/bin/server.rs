@@ -1,7 +1,6 @@
 #![feature(impl_trait_in_assoc_type)]
 use mini_redis::S;
 use mini_redis::{AsciiFilterLayer, TimedLayer};
-use tokio::sync::mpsc;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::net::SocketAddr;
