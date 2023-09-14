@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use lazy_static::lazy_static;
-use mini_redis::cmdargs::{self, ClientConfig};
+use mini_redis::cmdargs::{self, ProxyConfig};
 use mini_redis::{AsciiFilterLayer, TimedLayer};
 use pilota::FastStr;
 use rustyline::{error::ReadlineError, DefaultEditor};
@@ -76,12 +76,12 @@ enum Commands {
 }
 
 lazy_static! {
-    static ref CMD_ARGS: ClientConfig = ClientConfig::parse();
+    static ref CMD_ARGS: ProxyConfig = ProxyConfig::parse();
     static ref TO_PROXY_SELF: volo_gen::volo::redis::ItemServiceClient = {
         let addr: SocketAddr = CMD_ARGS
-            .slaveof
+            .attach_to
             .clone()
-            .unwrap_or("127.0.0.1:8080".into())
+            .unwrap_or("127.0.0.1:8080".into()) //TODO: parse from config
             .parse()
             .unwrap();
         volo_gen::volo::redis::ItemServiceClientBuilder::new("volo-redis")
@@ -127,6 +127,7 @@ async fn main() {
         "127.0.0.1".to_string().parse().unwrap(),
         8888,
     ));
+     //TODO: parse from config
     //--testonly!
 
     let mut slot_belong: Vec<usize> = Vec::with_capacity(SLOTS); // node (that this slot belongs to) id in `masters`

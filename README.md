@@ -61,8 +61,10 @@ get a
 Cluster Proxy：
 ```shell
 cargo run --bin server -- -i 127.0.0.1 -p 8080 # 8080
-cargo run --bin proxy -- -s 127.0.0.1:8888 # 默认转发8888
-cargo run --bin proxy -- -s 127.0.0.1:8080 # 挂载到proxy服务器
+cargo run --bin server -- -i 127.0.0.1 -p 8888 # 默认转发：8888
+cargo run --bin proxy -- -a 127.0.0.1:8080 # 挂载到proxy服务器
+# cluster配置文件默认cluster.toml
+cargo run --bin proxy -- --cfg cluster.toml # 挂载到proxy服务器
 ```
 ## 运行示例
 ![full test](statics/test.png)

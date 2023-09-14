@@ -5,7 +5,7 @@ use clap::Parser;
 pub struct ServerConfig {
     /// Server name, used in default AOF file name.
     /// Will be randomly chosen if not provided
-    #[arg(short, long, value_name = "FILE")]
+    #[arg(short, long)]
     pub name: Option<String>,
 
     /// Optional AOF file path
@@ -41,4 +41,16 @@ pub struct ClientConfig {
     /// Execute provided commands after initialization
     #[arg(long)]
     pub pre_run: Option<Vec<String>>,
+}
+
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+pub struct ProxyConfig {
+    /// Mark this Vodis instance as a slave
+    #[arg(short, long, value_name = "Master IP:PORT")]
+    pub attach_to: Option<String>,
+
+    /// Cluster config file path
+    #[arg(long)]
+    pub cfg: Option<String>,
 }
