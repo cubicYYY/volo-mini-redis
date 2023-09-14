@@ -9,11 +9,11 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
-
 lazy_static! {
     // Command line args
     static ref CMD_ARGS: ServerConfig = ServerConfig::parse();
 }
+
 #[volo::main]
 async fn main() {
     let addr: SocketAddr = SocketAddr::new(

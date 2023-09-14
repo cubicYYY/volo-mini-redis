@@ -43,11 +43,11 @@ get tenmin
 ping 啊波测得
 subscribe aaa
 ```
-```plaintext
+```shell
 publish aaa abcdefg
 ```
 主从：  
-```plaintext
+```shell
 cargo run --bin server -- -i 127.0.0.1 -p 8080 #主@8080
 cargo run --bin client-cli -- -s 127.0.0.1:8080 #主的客户端
 cargo run --bin server -- -i 127.0.0.1 -p 8888 --slaveof 127.0.0.1:8080 #从@8888
@@ -57,6 +57,12 @@ set a aaa
 #在从客户端：
 get a
 # [OK] aaa
+```
+Cluster Proxy：
+```shell
+cargo run --bin server -- -i 127.0.0.1 -p 8080 # 8080
+cargo run --bin proxy -- -s 127.0.0.1:8888 # 默认转发8888
+cargo run --bin proxy -- -s 127.0.0.1:8080 # 挂载到proxy服务器
 ```
 ## 运行示例
 ![full test](statics/test.png)

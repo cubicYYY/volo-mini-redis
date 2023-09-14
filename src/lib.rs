@@ -46,7 +46,7 @@ impl std::fmt::Display for RedisState {
     }
 }
 
-fn get_client(addr: impl Into<Address>) -> volo_gen::volo::redis::ItemServiceClient {
+pub fn get_client(addr: impl Into<Address>) -> volo_gen::volo::redis::ItemServiceClient {
     volo_gen::volo::redis::ItemServiceClientBuilder::new("volo-redis")
         .layer_outer(TimedLayer)
         .layer_outer(AsciiFilterLayer)
