@@ -9,11 +9,15 @@
 {
     echo -e "input args: -- -s 127.0.0.1:8080" > /dev/stderr
     read -p ''
-    read -p $'set 1 123 ex 2'
-    echo -e "set 1 123 ex 2"
-    sleep 1
-    read -p $'set 2 114514'
-    echo -e "set 2 114514"
+    read -p $'set key frommaster'
+    echo -e "set key frommaster"
     sleep 1
 } | (./target/debug/client-cli )
-#| ./target/debug/client-cli
+
+{
+    echo -e "input args: -- -s 127.0.0.1:8888" > /dev/stderr
+    read -p ''
+    read -p $'get key slave'
+    echo -e "get key"
+    sleep 1
+} | (./target/debug/client-cli )
