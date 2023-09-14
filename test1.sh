@@ -7,7 +7,7 @@
 # echo "开始测试"
 # -- -s "127.0.0.1:8080"
 {
-    echo -n "input args: " > /dev/stderr
+    echo -e "input args: -- -s 127.0.0.1:8080" > /dev/stderr
     read -p ''
     read -p $'ping'
     echo -e "ping"
