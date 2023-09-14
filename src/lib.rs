@@ -4,6 +4,7 @@ mod redis;
 
 use anyhow::{ anyhow, Ok };
 use redis::Timestamp;
+use tracing::info;
 use std::{
     fs::{ File, OpenOptions },
     io::{ BufRead, BufReader, Seek, SeekFrom, Write },
@@ -17,6 +18,9 @@ use std::sync::{ Arc, Mutex };
 pub struct S {
     pub redis: RwLock<redis::Redis>,
     sender: mpsc::Sender<String>,
+}
+lazy_static::lazy_static! {
+    pub static ref CTRL_C: Arc<RwLock<bool>> = Arc::new(RwLock::new(false));
 }
 impl S {
     pub fn new() -> S {
@@ -36,7 +40,6 @@ impl S {
                     if command.is_empty() {
                         return;
                     }
-                    // 将缓存中的操作写入 AOF 文件
                     command.iter().for_each(|cmd| {
                         write!(aof_file, "{}", cmd).expect("Failed to write to AOF file");
                     });
@@ -50,7 +53,14 @@ impl S {
                         if  last_write_time.elapsed() >= Duration::from_secs(1) {
                             flush(&command);
                             command.clear();
-                            last_write_time = Instant::now();
+                        } else {
+                            command.push(msg);
+                            // 检查是否距上次写入已经过去了 1 秒
+                            if last_write_time.elapsed() >= Duration::from_secs(1) {
+                                flush(&command);
+                                command.clear();
+                                last_write_time = Instant::now();
+                            }
                         }
                     }
                     Err(_) => {
@@ -68,7 +78,7 @@ impl S {
         }
     }
     async fn send_message(&self, msg: String) {
-        self.sender.send(msg).await;
+        let _ = self.sender.send(msg).await;
     }
 }
 
@@ -168,21 +178,23 @@ impl volo_gen::volo::redis::ItemService for S {
         volo_gen::volo::redis::GetItemResponse,
         ::volo_thrift::AnyhowError
     > {
-        // {
-        //     let ctrl_c = CTRL_C.read().await;
-        //     if *ctrl_c {
-        //         return Err(anyhow!("Server is shutting").into());
-        //     }
-        // }
-        // let shared_data = Arc::new(Mutex::new(false));
-        // let shared_data_clone = Arc::clone(&shared_data);
-        // volo::spawn(async move {
-        //     let _ = signal::ctrl_c().await;
-        //     *shared_data_clone.lock().unwrap() = true;
-        // });
+        {
+            let ctrl_c = CTRL_C.read().await;
+            if *ctrl_c {
+                return Err(anyhow!("Server is shutting").into());
+            }
+        }
+        let shared_data = Arc::new(Mutex::new(false));
+        let shared_data_clone = Arc::clone(&shared_data);
+        volo::spawn(async move {
+            let _ = signal::ctrl_c().await;
+            info!("Ctrl-C received, shutting down");
+            *shared_data_clone.lock().unwrap() = true;
+        });
         use volo_gen::volo::redis::GetItemResponse;
         let response = match _req.cmd {
             RedisCommand::Ping => {
+                tokio::time::sleep(Duration::from_secs(10)).await;
                 if let Some(arg) = _req.args {
                     let ans = if arg.len() == 0 { "pong".into() } else { arg.join(" ").into() };
                     Ok(GetItemResponse {
@@ -338,16 +350,14 @@ impl volo_gen::volo::redis::ItemService for S {
                 }
             }
         };
-        // {
-        //     let ctrl_c = CTRL_C.read().await;
-        //     if *ctrl_c {
-        //         thread::sleep(Duration::from_secs(2));
-        //     } else if *shared_data.lock().unwrap() {
-        //         let mut ctrl_c = CTRL_C.write().await;
-        //         *ctrl_c = true;
-        //         thread::sleep(Duration::from_secs(2));
-        //     }
-        // }
+        {
+            let ctrl_c = CTRL_C.read().await;
+            if *ctrl_c {
+                self.send_message("SHUTDOWN".to_string()).await;
+            } else if *shared_data.lock().unwrap() {
+                self.send_message("SHUTDOWN".to_string()).await;
+            }
+        }
         return response;
     }
 }
