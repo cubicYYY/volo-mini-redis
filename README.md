@@ -18,12 +18,14 @@
 - 中间件（过滤非ASCII可打印字符，请求计时）
 - 持久化（AOF）
 - gracefully shutdown（服务端等待所有客户端退出后关闭）
+- 主从模式
+- Cluster模式
 
 ## TODOs
 
-- 布隆过滤器
-- Cluster模式
-- 主从模式
+- 更细粒度锁
+- Bloom过滤器
+- Slave只接受可信UUID
 - 全量同步时利用缓冲区允许写入
 
 ## 备注

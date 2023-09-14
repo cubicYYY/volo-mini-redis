@@ -1,6 +1,6 @@
 # Example cluster setup
 [cluster]
-default_ip = "127.0.0.1"
+default_ip = "127.0.0.1" # String
 proxy_ip = "127.0.0.1"
 proxy_port = 8080
 
