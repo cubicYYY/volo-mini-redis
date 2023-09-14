@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use lazy_static::lazy_static;
+use mini_redis::cmdargs::{self, ClientConfig};
 use mini_redis::{AsciiFilterLayer, TimedLayer};
 use pilota::FastStr;
 use rustyline::{error::ReadlineError, DefaultEditor};
@@ -54,11 +55,16 @@ enum Commands {
         channel: String,
     },
 }
-const REMOTE_ADDR: &str = "127.0.0.1:8080"; // TODO: specify in cmd args
 
 lazy_static! {
+    static ref CMD_ARGS: ClientConfig = ClientConfig::parse();
     static ref CLIENT: volo_gen::volo::redis::ItemServiceClient = {
-        let addr: SocketAddr = REMOTE_ADDR.parse().unwrap();
+        let addr: SocketAddr = CMD_ARGS
+            .slaveof
+            .clone()
+            .unwrap_or("127.0.0.1:8080".into())
+            .parse()
+            .unwrap();
         volo_gen::volo::redis::ItemServiceClientBuilder::new("volo-redis")
             .layer_outer(TimedLayer)
             .layer_outer(AsciiFilterLayer)
@@ -72,6 +78,7 @@ async fn subscribe(handle: String) -> ! {
             .get_item(volo_gen::volo::redis::GetItemRequest {
                 cmd: RedisCommand::Fetch,
                 args: Some(vec![handle.clone().into()]),
+                client_id: None,
             })
             .await;
         match resp {
@@ -145,6 +152,7 @@ async fn main() {
                     .get_item(volo_gen::volo::redis::GetItemRequest {
                         cmd: RedisCommand::Ping,
                         args: args.map(|vstr| vstr.into_iter().map(|s| FastStr::new(s)).collect()),
+                        client_id: None,
                     })
                     .await;
                 match resp {
@@ -172,6 +180,7 @@ async fn main() {
                     .get_item(volo_gen::volo::redis::GetItemRequest {
                         cmd: RedisCommand::Set,
                         args: Some(args.iter().map(|s| FastStr::new(s)).collect()),
+                        client_id: None,
                     })
                     .await;
                 match resp {
@@ -187,6 +196,7 @@ async fn main() {
                     .get_item(volo_gen::volo::redis::GetItemRequest {
                         cmd: RedisCommand::Get,
                         args: Some(vec![key.into()]),
+                        client_id: None,
                     })
                     .await;
                 match resp {
@@ -202,6 +212,7 @@ async fn main() {
                     .get_item(volo_gen::volo::redis::GetItemRequest {
                         cmd: RedisCommand::Del,
                         args: Some(vec![key.into()]),
+                        client_id: None,
                     })
                     .await;
                 match resp {
@@ -222,6 +233,7 @@ async fn main() {
                     .get_item(volo_gen::volo::redis::GetItemRequest {
                         cmd: RedisCommand::Publish,
                         args: Some(vec![channel.into(), message.into()]),
+                        client_id: None,
                     })
                     .await;
                 match resp {
@@ -239,6 +251,7 @@ async fn main() {
                     .get_item(volo_gen::volo::redis::GetItemRequest {
                         cmd: RedisCommand::Subscribe,
                         args: Some(vec![channel.clone().into()]),
+                        client_id: None,
                     })
                     .await;
                 match resp {

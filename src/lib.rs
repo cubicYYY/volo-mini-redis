@@ -1,13 +1,17 @@
 #![feature(impl_trait_in_assoc_type)]
 
+pub mod cmdargs;
 mod redis;
 
 use anyhow::{anyhow, Ok};
 use clap::{self, Parser};
+use cmdargs::ServerConfig;
 use lazy_static::lazy_static;
-use rand::distributions::Alphanumeric;
-use rand::Rng;
+use pilota::FastStr;
 use redis::Timestamp;
+use std::collections::HashMap;
+use std::net::IpAddr;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::{
     fs::{File, OpenOptions},
@@ -20,12 +24,13 @@ use tokio::sync::mpsc;
 use tokio::{signal, sync::Mutex};
 use tracing::info;
 use uuid::Uuid;
-use volo_gen::volo::redis::RedisCommand;
+use volo::net::Address;
+use volo_gen::volo::redis::{GetItemRequest, GetItemResponse, RedisCommand};
 
-pub type Host = String;
-pub type Port = u32;
+pub type Host = IpAddr;
+pub type Port = u16;
 
-enum RedisState {
+pub enum RedisState {
     Single,
     Master,              // m-s mode / cluster mode
     SlaveOf(Host, Port), // m-s mode / cluster mode
@@ -41,64 +46,58 @@ impl std::fmt::Display for RedisState {
     }
 }
 
-#[derive(Parser)]
-#[command(author, version, about, long_about = None)]
-struct ServerConfig {
-    /// Optional AOF file path
-    #[arg(short, long, value_name = "FILE")]
-    aof: Option<String>,
-
-    /// Mark this Vodis instance as a slave
-    #[arg(short, long, value_name = "IP:PORT")]
-    slaveof: Option<String>,
-
-    /// Sets a custom config file
-    #[arg(short, long, action = clap::ArgAction::Count)]
-    cluster: u8,
-
-    /// Execute provided commands after initialization
-    #[arg(short, long)]
-    pre_run: Option<Vec<String>>,
+fn get_client(addr: impl Into<Address>) -> volo_gen::volo::redis::ItemServiceClient {
+    volo_gen::volo::redis::ItemServiceClientBuilder::new("volo-redis")
+        .layer_outer(TimedLayer)
+        .layer_outer(AsciiFilterLayer)
+        .address(addr)
+        .build()
 }
-
+type ArwLock<T> = Arc<Mutex<T>>;
 lazy_static! {
+    static ref REDIS: ArwLock<redis::Redis> = Arc::new(Mutex::new(redis::Redis::new()));
     // Command line args
     static ref CMD_ARGS: ServerConfig = ServerConfig::parse();
+
+    static ref NAME: Option<String> = CMD_ARGS.name.clone();
+    static ref SLAVE_OF: Option<String> = CMD_ARGS.slaveof.clone();
+    static ref SELF_PUB_ADDR: String = format!("{}:{}",CMD_ARGS.ip.clone(), CMD_ARGS.port.clone());
     static ref MASTER_ADDR: String = String::from((CMD_ARGS.slaveof).clone().expect("No master ADDR specified."));
-    static ref IS_CLUSTER: bool = CMD_ARGS.cluster > 0;
+    // static ref IS_CLUSTER: bool = CMD_ARGS.cluster > 0;
     static ref PRE_RUN: Option<Vec<String>> = CMD_ARGS.pre_run.clone();
 
     static ref CTRL_C: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
-    static ref CLIENT: volo_gen::volo::redis::ItemServiceClient = {
+    static ref TO_MASTER_CLIENT: volo_gen::volo::redis::ItemServiceClient = {
         let addr: SocketAddr = MASTER_ADDR.parse().unwrap();
-        volo_gen::volo::redis::ItemServiceClientBuilder::new("volo-redis")
-            .layer_outer(TimedLayer)
-            .layer_outer(AsciiFilterLayer)
-            .address(addr)
-            .build()
+        get_client(addr)
     };
 }
 
-type ArwLock<T> = Arc<Mutex<T>>;
 pub struct S {
-    pub redis: ArwLock<redis::Redis>,
-    sender: mpsc::Sender<String>,
-    state: ArwLock<RedisState>,
-    uuid: Uuid,
+    pub redis: &'static ArwLock<redis::Redis>,
+    sender: ArwLock<mpsc::Sender<String>>,
+    pub state: ArwLock<RedisState>,
+    pub uuid: ArwLock<Uuid>, // TODO: remove this lock as it will only be modify once by main thread
+    pub client_addrs: ArwLock<HashMap<Uuid, SocketAddr>>,
 }
 
 impl S {
-    pub fn new() -> S {
+    pub async fn new() -> S {
         let (sender, mut receiver) = mpsc::channel(1024);
-        let id = Uuid::new_v4();
-        let dupid = id.clone();
-        // Spawn a thread to handle received messages
-        thread::spawn(move || {
+        // Spawn a thread to periodically flush the data into AOF file
+        tokio::spawn(async move {
             let mut command: Vec<String> = Vec::new();
             let mut aof_file = OpenOptions::new()
                 .append(true)
                 .create(true)
-                .open(format!("{}.aof", dupid))
+                .open(format!(
+                    "{}.aof",
+                    if NAME.is_none() {
+                        "server"
+                    } else {
+                        NAME.as_ref().unwrap().as_str()
+                    }
+                ))
                 .expect("Failed to open AOF file");
             let mut last_write_time = Instant::now();
             loop {
@@ -132,15 +131,36 @@ impl S {
                 }
             }
         });
-        S {
-            redis: Arc::new(Mutex::new(redis::Redis::new())),
-            sender,
-            state: Arc::new(Mutex::new(RedisState::Single)), // TODO: can be changed
-            uuid: id,                                        // TODO: can recover from old id
+
+        let s = S {
+            redis: &REDIS,
+            sender: Arc::new(Mutex::new(sender)),
+            state: Arc::new(Mutex::new(RedisState::Single)),
+            uuid: Arc::new(Mutex::new(Uuid::nil())),
+            client_addrs: Arc::new(Mutex::new(HashMap::new())),
+        };
+        // pre-run commands, TODO
+        // ...
+
+        // if SLAVE: then sync
+        if let Some(master) = SLAVE_OF.clone() {
+            let addr: SocketAddr = master.parse().unwrap();
+            s.react_to_command(GetItemRequest {
+                cmd: RedisCommand::Replicaof,
+                args: Some(vec![
+                    addr.ip().to_string().into(),
+                    addr.port().to_string().into(),
+                ]),
+                client_id: None,
+            })
+            .await
+            .expect("Failed to execute init commands!");
+            println!("Sync send.");
         }
+        s
     }
     async fn send_message(&self, msg: String) {
-        let _ = self.sender.send(msg).await;
+        let _ = self.sender.lock().await.send(msg).await;
     }
 }
 
@@ -226,29 +246,13 @@ impl<S> volo::Layer<S> for TimedLayer {
         Timed(inner)
     }
 }
-
-#[volo::async_trait]
-impl volo_gen::volo::redis::ItemService for S {
-    async fn get_item(
+impl S {
+    async fn react_to_command(
         &self,
-        _req: volo_gen::volo::redis::GetItemRequest,
+        _req: GetItemRequest,
     ) -> ::core::result::Result<volo_gen::volo::redis::GetItemResponse, ::volo_thrift::AnyhowError>
     {
-        {
-            let ctrl_c = CTRL_C.lock().await;
-            if *ctrl_c {
-                return Err(anyhow!("Server is shutting").into());
-            }
-        }
-        let shared_data = Arc::new(Mutex::new(false));
-        let shared_data_clone = Arc::clone(&shared_data);
-        let child = volo::spawn(async move {
-            let _ = signal::ctrl_c().await;
-            info!("Ctrl-C received, shutting down");
-            *shared_data_clone.lock().await = true;
-        });
-        use volo_gen::volo::redis::GetItemResponse;
-        let response = match _req.cmd {
+        match _req.cmd {
             RedisCommand::Ping => {
                 if let Some(arg) = _req.args {
                     let ans = if arg.len() == 0 {
@@ -278,7 +282,7 @@ impl volo_gen::volo::redis::ItemService for S {
                         arg.len()
                     ));
                 }
-                if let Some(value) = self.redis.lock().await.get(arg[0].as_ref()) {
+                if let Some(value) = REDIS.lock().await.get(arg[0].as_ref()) {
                     Ok(GetItemResponse {
                         ok: true,
                         data: Some(value.into()),
@@ -334,7 +338,7 @@ impl volo_gen::volo::redis::ItemService for S {
                 );
                 self.send_message(command_str).await;
                 println!("xxx");
-                self.redis
+                REDIS
                     .lock()
                     .await
                     .set_after(key.as_ref(), value.as_ref(), milliseconds);
@@ -356,7 +360,7 @@ impl volo_gen::volo::redis::ItemService for S {
                 }
                 let mut success: u16 = 0;
                 for key in arg {
-                    success += self.redis.lock().await.del(key.as_ref()) as u16;
+                    success += REDIS.lock().await.del(key.as_ref()) as u16;
                     let command_str = format!("DEL {:} 0 0\n", key);
                     self.send_message(command_str).await;
                 }
@@ -379,14 +383,7 @@ impl volo_gen::volo::redis::ItemService for S {
                 let (chan, s) = (&arg[0], &arg[1]);
                 Ok(GetItemResponse {
                     ok: true,
-                    data: Some(
-                        self.redis
-                            .lock()
-                            .await
-                            .broadcast(chan, s)
-                            .to_string()
-                            .into(),
-                    ),
+                    data: Some(REDIS.lock().await.broadcast(chan, s).to_string().into()),
                 })
             }
             RedisCommand::Subscribe => {
@@ -404,7 +401,7 @@ impl volo_gen::volo::redis::ItemService for S {
                 Ok(GetItemResponse {
                     ok: true,
                     data: Some(
-                        self.redis
+                        REDIS
                             .lock()
                             .await
                             .add_subscriber(channel)
@@ -413,6 +410,102 @@ impl volo_gen::volo::redis::ItemService for S {
                     ),
                 })
             }
+            RedisCommand::Replicaof => {
+                // This will change the master.
+
+                let mut curr_state = self.state.lock().await;
+
+                if _req.args.is_none() {
+                    return Err(anyhow!("No arguments given (required)"));
+                }
+                let arg = _req.args.unwrap();
+                if arg.len() != 2 {
+                    return Err(anyhow!(
+                        "Invalid arguments count: {} (expected =0)",
+                        arg.len()
+                    ));
+                }
+
+                // Modify master, and replace the CLIENT to master node
+                let mst_host: Host = arg[0].to_string().parse()?;
+                let mst_port: Port = arg[1].parse()?;
+                let _mst_addr = SocketAddr::new(mst_host, mst_port);
+                *curr_state = RedisState::SlaveOf(mst_host.clone(), mst_port.clone());
+
+                let self_addr: SocketAddr = SELF_PUB_ADDR.parse().unwrap();
+                // TODO: replace the global client as a performance boost
+                let resp = get_client(SocketAddr::new(mst_host, mst_port))
+                    .get_item(volo_gen::volo::redis::GetItemRequest {
+                        cmd: RedisCommand::Sync,
+                        args: Some(vec![
+                            self_addr.ip().to_string().into(),
+                            self_addr.port().to_string().into(),
+                        ]),
+                        client_id: None,
+                    })
+                    .await?;
+
+                if !resp.ok {
+                    return Err(anyhow!("Sync failed: error at server side"));
+                }
+                let uuid = resp.data.unwrap();
+                *(self.uuid.lock().await) = Uuid::from_str(&uuid.to_string())?;
+
+                Ok(GetItemResponse {
+                    ok: true,
+                    data: Some("OK".into()),
+                })
+            }
+            RedisCommand::Sync => {
+                // Start full sync server-side, return a UUID as an identifier of this client
+                // Should provide 2 ags: client ip, port
+                {
+                    let mut curr_state = self.state.lock().await;
+                    if let RedisState::Single = *curr_state {
+                        *curr_state = RedisState::Master;
+                    }
+                }
+                let arg = _req.args.unwrap();
+                if arg.len() != 2 {
+                    return Err(anyhow!(
+                        "Invalid arguments count: {} (expected =2, pub_ip, pub_port)",
+                        arg.len()
+                    ));
+                }
+                let clihost: IpAddr = arg[0].to_string().parse()?;
+                let cliport: Port = arg[1].parse::<u16>()?;
+
+                let gen_uuid = Uuid::new_v4();
+                // add this uuid to client list
+                let mut caddr = self.client_addrs.lock().await;
+                caddr.insert(gen_uuid, SocketAddr::new(clihost, cliport));
+                tokio::spawn(async move {
+                    let readonly = REDIS.lock().await;
+                    let data = readonly.serialize(); // HEAVY WORKLOAD
+                                                     //...When the data is generated:
+                    let _resp = get_client(SocketAddr::new(clihost, cliport))
+                        .get_item(volo_gen::volo::redis::GetItemRequest {
+                            cmd: RedisCommand::SyncGot,
+                            args: Some(vec![unsafe { FastStr::from_vec_u8_unchecked(data) }]),
+                            client_id: None,
+                        })
+                        .await;
+                });
+                Ok(GetItemResponse {
+                    ok: true,
+                    data: Some(gen_uuid.to_string().into()), // this UUID will be decoded in Replicaof command at the client side
+                })
+            }
+            RedisCommand::ClusterMeet => {
+                unimplemented!()
+            }
+            RedisCommand::ClusterAddSlots => {
+                unimplemented!()
+            }
+            RedisCommand::ClusterCreate => {
+                unimplemented!()
+            }
+            // Internal commands, you can seen as remote interupts
             RedisCommand::Fetch => {
                 if _req.args.is_none() {
                     return Err(anyhow!("No arguments given (required)"));
@@ -425,7 +518,7 @@ impl volo_gen::volo::redis::ItemService for S {
                     ));
                 }
                 let handler = arg[0].parse::<usize>()?;
-                let try_query = self.redis.lock().await.fetch(handler);
+                let try_query = REDIS.lock().await.fetch(handler);
                 Ok(GetItemResponse {
                     ok: try_query.is_ok(),
                     data: if try_query.is_ok() {
@@ -435,77 +528,49 @@ impl volo_gen::volo::redis::ItemService for S {
                     },
                 })
             }
-            RedisCommand::Replicaof => {
-                let mut curr_state = self.state.lock().await;
-                if let RedisState::Single = *curr_state {
-                    return Err(anyhow!(
-                        "REPLICAOF is not supported in this state: `{}`.",
-                        *curr_state
-                    ));
-                }
+            RedisCommand::SyncGot => {
                 if _req.args.is_none() {
-                    return Err(anyhow!("No arguments given (required)"));
-                }
-                let arg = _req.args.unwrap();
-                if arg.len() != 2 {
-                    return Err(anyhow!(
-                        "Invalid arguments count: {} (expected =0)",
-                        arg.len()
-                    ));
-                }
-                let host: Host = arg[0].to_string();
-                let port: Port = arg[1].parse::<u32>()?;
-                *curr_state = RedisState::SlaveOf(host, port);
-
-                let resp = CLIENT
-                    .get_item(volo_gen::volo::redis::GetItemRequest {
-                        cmd: RedisCommand::Sync,
-                        args: None,
-                    })
-                    .await?;
-                if !resp.ok || resp.data.is_none() {
                     return Err(anyhow!("Failed to get deserialized data."));
                 }
-                self.redis
+                let payload = _req.args.unwrap();
+                if payload.len() != 1 {
+                    return Err(anyhow!("Illegal deserial data format."));
+                }
+                REDIS
                     .lock()
                     .await
-                    .deserialize(resp.data.unwrap().into_bytes().to_vec());
+                    .deserialize(payload[0].to_owned().into_bytes().to_vec());
+                info!("Serialize success!!!");
                 Ok(GetItemResponse {
                     ok: true,
                     data: None,
                 })
             }
-            RedisCommand::Sync => {
-                let curr_state = self.state.lock().await;
-                if let RedisState::Single = *curr_state {
-                    return Err(anyhow!(
-                        "SYNC is not supported in this state: `{}`.",
-                        *curr_state
-                    ));
-                }
-                let arg = _req.args.unwrap();
-                if arg.len() != 0 {
-                    return Err(anyhow!(
-                        "Invalid arguments count: {} (expected =0)",
-                        arg.len()
-                    ));
-                }
-                let data = self.redis.lock().await.serialize();
-                Ok(GetItemResponse {
-                    ok: true,
-                    data: Some(String::from_utf8(data).unwrap().into()),
-                })
+        }
+    }
+}
+
+#[volo::async_trait]
+impl volo_gen::volo::redis::ItemService for S {
+    async fn get_item(
+        &self,
+        _req: volo_gen::volo::redis::GetItemRequest,
+    ) -> ::core::result::Result<volo_gen::volo::redis::GetItemResponse, ::volo_thrift::AnyhowError>
+    {
+        {
+            let ctrl_c = CTRL_C.lock().await;
+            if *ctrl_c {
+                return Err(anyhow!("Server is shutting").into());
             }
-            RedisCommand::ClusterMeet => {
-                unimplemented!()
-            }
-            RedisCommand::ClusterAddSlots => {
-                unimplemented!()
-            }
-            RedisCommand::ClusterCreate => {
-                unimplemented!()
-            }
-        };
+        }
+        let shared_data = Arc::new(Mutex::new(false));
+        let shared_data_clone = Arc::clone(&shared_data);
+        let child = volo::spawn(async move {
+            let _ = signal::ctrl_c().await;
+            info!("Ctrl-C received, shutting down");
+            *shared_data_clone.lock().await = true;
+        });
+        let response = self.react_to_command(_req).await;
         {
             {
                 let ctrl_c = CTRL_C.lock().await;

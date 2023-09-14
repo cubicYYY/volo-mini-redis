@@ -1,17 +1,28 @@
 #![feature(impl_trait_in_assoc_type)]
+use clap::Parser;
+use lazy_static::lazy_static;
+use mini_redis::cmdargs::ServerConfig;
+
 use mini_redis::S;
 use mini_redis::{AsciiFilterLayer, TimedLayer};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc;
+
+lazy_static! {
+    // Command line args
+    static ref CMD_ARGS: ServerConfig = ServerConfig::parse();
+}
 #[volo::main]
 async fn main() {
-    let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+    let addr: SocketAddr = SocketAddr::new(
+        CMD_ARGS.ip.parse().unwrap(),
+        CMD_ARGS.port.to_string().parse().unwrap(),
+    );
     let addr = volo::net::Address::from(addr);
 
-    let s = S::new();
+    let s = S::new().await;
     let file = File::open("./src/AOF_FILE").unwrap();
     let reader = BufReader::new(file);
 

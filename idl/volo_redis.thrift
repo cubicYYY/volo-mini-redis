@@ -14,11 +14,13 @@ enum RedisCommand {
     ClusterAddSlots,
     // INTERNALS:
     Fetch,
+    SyncGot,
 }
 
 struct GetItemRequest {
     1: required RedisCommand cmd,
     2: optional list<string> args,
+    3: optional string client_id,
 }
 
 struct GetItemResponse {

@@ -10,8 +10,6 @@ use std::{
 pub type Timestamp = u128;
 pub type RcvHandle = usize;
 
-const CLUSTER_MAX_SIZE: u16 = 16384;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TimedValue {
     pub value: String,
@@ -142,7 +140,6 @@ impl Redis {
     }
 
     /// Serialize the data stored
-    /// TODO: asynchronously
     pub fn serialize(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         self.kvs.serialize(&mut Serializer::new(&mut buf)).unwrap();
@@ -150,7 +147,6 @@ impl Redis {
     }
 
     /// De-serialize the data, WITH CURRENT DATA CLEARED
-    /// TODO: asynchronously
     pub fn deserialize(&mut self, data: Vec<u8>) {
         self.kvs = rmp_serde::from_slice(&data).unwrap();
     }
