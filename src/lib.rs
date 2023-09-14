@@ -11,11 +11,12 @@ use std::sync::{Arc, Mutex};
 use std::{
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, Seek, SeekFrom, Write},
-    sync::mpsc,
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+use tokio::sync::mpsc;
 use tokio::{signal, sync::RwLock};
+use tracing::info;
 use volo_gen::volo::redis::RedisCommand;
 
 type RedisID = String;
@@ -41,7 +42,7 @@ lazy_static! {
     static ref CTRL_C: Arc<RwLock<bool>> = Arc::new(RwLock::new(false));
 }
 pub struct S {
-    pub redis: RwLock<redis::Redis>,
+    pub redis: Arc<RwLock<redis::Redis>>,
     sender: mpsc::Sender<String>,
     state: RedisState,
     in_cluster: bool,
@@ -50,7 +51,7 @@ pub struct S {
 
 impl S {
     pub fn new() -> S {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, mut receiver) = mpsc::channel(1024);
         let id: RedisID = rand::thread_rng()
             .sample_iter(&Alphanumeric)
             .take(16)
@@ -79,7 +80,7 @@ impl S {
                     aof_file.flush().expect("Failed to flush file");
                     println!("COMMAND SAVED!!");
                 };
-                match receiver.recv_timeout(Duration::from_secs(1)) {
+                match receiver.try_recv() {
                     std::result::Result::Ok(msg) => {
                         command.push(msg);
                         // 检查是否距上次写入已经过去了 1 秒
@@ -98,15 +99,15 @@ impl S {
             }
         });
         S {
-            redis: RwLock::new(redis::Redis::new()),
+            redis: Arc::new(RwLock::new(redis::Redis::new())),
             sender,
             state: RedisState::Single, // TODO: can be changed
             in_cluster: false,
             id, // TODO: can recover from old id
         }
     }
-    fn send_message(&self, msg: String) {
-        self.sender.send(msg).unwrap();
+    async fn send_message(&self, msg: String) {
+        let _ = self.sender.send(msg).await;
     }
 }
 
@@ -208,8 +209,9 @@ impl volo_gen::volo::redis::ItemService for S {
         }
         let shared_data = Arc::new(Mutex::new(false));
         let shared_data_clone = Arc::clone(&shared_data);
-        volo::spawn(async move {
+        let child = volo::spawn(async move {
             let _ = signal::ctrl_c().await;
+            info!("Ctrl-C received, shutting down");
             *shared_data_clone.lock().unwrap() = true;
         });
         use volo_gen::volo::redis::GetItemResponse;
@@ -295,7 +297,7 @@ impl volo_gen::volo::redis::ItemService for S {
                                 0u128
                             }
                         );
-                        self.send_message(command_str);
+                        self.send_message(command_str).await;
                         println!("xxx");
                         self.redis.write().await.set_after(
                             key.as_ref(),
@@ -322,19 +324,9 @@ impl volo_gen::volo::redis::ItemService for S {
                         let mut success: u16 = 0;
                         for key in arg {
                             success += self.redis.write().await.del(key.as_ref()) as u16;
-                            let command_str = format!("DEL {:}\n", key);
-                            self.send_message(command_str);
+                            let command_str = format!("DEL {:} 0 0\n", key);
+                            self.send_message(command_str).await;
                         }
-
-                        //let mut command = &self.COMMAND.write();
-                        println!("xxx");
-                        //panic!();
-                        //let command = Arc::clone(&self.COMMAND);
-                        // thread::spawn(move ||{
-                        //    let mut command_vec = command.lock().unwrap();
-                        //    command_vec.push(command_str);
-                        //    println!("yyy");
-                        // });
                         Ok(GetItemResponse {
                             ok: true,
                             data: Some(success.to_string().into()),
@@ -456,15 +448,20 @@ impl volo_gen::volo::redis::ItemService for S {
             }
         };
         {
-            let ctrl_c = CTRL_C.read().await;
-            if *ctrl_c {
-                thread::sleep(Duration::from_secs(2));
-            } else if *shared_data.lock().unwrap() {
+            {
+                let ctrl_c = CTRL_C.read().await;
+                if *ctrl_c {
+                    self.send_message("SHUTDOWN".to_string()).await;
+                }
+            }
+            if *shared_data.lock().unwrap() {
+                self.send_message("SHUTDOWN".to_string()).await;
                 let mut ctrl_c = CTRL_C.write().await;
                 *ctrl_c = true;
-                thread::sleep(Duration::from_secs(2));
+                info!("reject new requests");
             }
         }
+        let _ = child.abort();
         return response;
     }
 }

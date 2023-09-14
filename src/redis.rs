@@ -1,6 +1,6 @@
-use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
-use rmp_serde::{Serializer, Deserializer};
+use rmp_serde::{Deserializer, Serializer};
 use serde::{Deserialize, Serialize};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::time::Duration;
 use std::{
     collections::HashMap,
@@ -22,7 +22,7 @@ struct TimedValue {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct StoredKV {
-    pub data: HashMap<String, TimedValue>
+    pub data: HashMap<String, TimedValue>,
 }
 
 pub struct Redis {
@@ -42,7 +42,9 @@ unsafe impl Sync for Redis {}
 impl Redis {
     pub fn new() -> Self {
         Self {
-            kvs: StoredKV {data: HashMap::new()},
+            kvs: StoredKV {
+                data: HashMap::new(),
+            },
             channels: HashMap::new(),
             rcv: HashMap::new(),
         }
@@ -159,7 +161,5 @@ impl Redis {
     }
 
     /// New node added to current cluster
-    pub fn new_node(&mut self) {
-
-    }
+    pub fn new_node(&mut self) {}
 }

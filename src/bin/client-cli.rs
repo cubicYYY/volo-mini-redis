@@ -258,9 +258,6 @@ async fn main() {
                 }
                 continue;
             }
-            _ => {
-                println!("Command is not supported!");
-            }
         };
     }
 }
