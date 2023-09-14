@@ -21,9 +21,9 @@ async fn main() {
         CMD_ARGS.port.to_string().parse().unwrap(),
     );
     let addr = volo::net::Address::from(addr);
-
+    let name = CMD_ARGS.name.clone();
     let s = S::new().await;
-    let file = File::open("./src/AOF_FILE").unwrap();
+    let file = File::open(format!("{}.aof", name.unwrap())).unwrap();
     let reader = BufReader::new(file);
 
     for line in reader.lines() {
