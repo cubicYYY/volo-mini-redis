@@ -10,5 +10,5 @@
     echo -e "input args: -- -i 127.0.0.1 -p 8888 -n slave_server" > /dev/stderr
     read -p ''
     read -p 'slave_server running'
-} | (./target/debug/client-cli )
+} | (./target/debug/server )
 #| ./target/debug/client-cli
