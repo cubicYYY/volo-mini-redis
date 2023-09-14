@@ -116,6 +116,10 @@ async fn subscribe(handle: String) -> ! {
     }
 }
 const SLOTS: usize = 16384;
+struct CountingBloom {
+    
+}
+
 #[volo::main]
 async fn main() {
     tracing_subscriber::fmt::init();
