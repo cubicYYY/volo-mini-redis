@@ -276,19 +276,9 @@ impl volo_gen::volo::redis::ItemService for S {
                         let mut success: u16 = 0;
                         for key in arg {
                             success += self.redis.write().await.del(key.as_ref()) as u16;
-                            let command_str = format!("DEL {:}\n", key);
+                            let command_str = format!("DEL {:} 0 0\n", key);
                             self.send_message(command_str);
                         }
-
-                        //let mut command = &self.COMMAND.write();
-                        println!("xxx");
-                        //panic!();
-                        //let command = Arc::clone(&self.COMMAND);
-                        // thread::spawn(move ||{
-                        //    let mut command_vec = command.lock().unwrap();
-                        //    command_vec.push(command_str);
-                        //    println!("yyy");
-                        // });
                         Ok(GetItemResponse {
                             ok: true,
                             data: Some(success.to_string().into()),
