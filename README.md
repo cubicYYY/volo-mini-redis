@@ -36,6 +36,7 @@
 返回的请求Err/Ok更多代表数据、命令格式是否正确，而返回体中的`ok`字段更多表示操作是否成功。  
 功能验证参考命令（请务必先启动服务端）：  
 ```plaintext
+# server1
 ping
 ping "114 514" 1919 810
 get nope
@@ -47,28 +48,24 @@ ping 啊波测得
 subscribe aaa
 ```
 ```shell
+# server2
 publish aaa abcdefg
 ```
-主从：  
+主从+Cluster：  
 ```shell
-cargo run --bin server -- -i 127.0.0.1 -p 8080 #主@8080
-cargo run --bin client-cli -- -s 127.0.0.1:8080 #主的客户端
-cargo run --bin server -- -i 127.0.0.1 -p 8888 --slaveof 127.0.0.1:8080 #从@8888
-cargo run --bin client-cli -- -s 127.0.0.1:8888 #从的客户端
-#对主客户端：
-set a aaa
-#在从客户端：
-get a
-# [OK] aaa
+cargo run --bin server -- -c -i 127.0.0.1 -p 8080 --name master1 # 主@8080
+cargo run --bin server -- -c -i 127.0.0.1 -p 8081 --name slave1 --slaveof 127.0.0.1:8080 # 从@8081
+cargo run --bin server -- -c -i 127.0.0.1 -p 8082 --name master2 # 主@8082
+cargo run --bin server -- -c -i 127.0.0.1 -p 8083 --name slave2 --slaveof 127.0.0.1:8082 # 从@8083
+cargo run --bin server -- -c -i 127.0.0.1 -p 8888 --name proxy #PROXY@8888
+cargo run --bin proxy -- -a 127.0.0.1:8080 --masters 127.0.0.1:8080 --masters 127.0.0.1:8082 # proxy客户端， 通过命令行设置masters
 ```
-Cluster Proxy：
+Proxy配置（TODO）：
 ```shell
-cargo run --bin server -- -i 127.0.0.1 -p 8080 --name main # 8080
-cargo run --bin server -- -i 127.0.0.1 -p 8888 --name proxy # 默认转发：8888
-cargo run --bin proxy -- -a 127.0.0.1:8080 --masters 127.0.0.1:8888 # 挂载到proxy服务器并通过命令行设置masters
 # cluster配置文件默认cluster.toml
 cargo run --bin proxy -- --cfg cluster.toml # 挂载到proxy服务器
 ```
-## 运行示例
+## 测试结果
+
 ![full test](statics/test.png)
 ![subscribe](statics/image.png)
