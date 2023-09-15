@@ -116,11 +116,67 @@ async fn subscribe(handle: String) -> ! {
     }
 }
 const SLOTS: usize = 16384;
-struct CountingBloom {}
+use std::collections::HashMap;
 
+pub struct CountingBloomFilter {
+    filter: HashMap<String, i32>,
+    num_hash_functions: usize,
+    filter_size: usize,
+}
+
+impl CountingBloomFilter {
+    pub fn new(num_hash_functions: usize, filter_size: usize) -> Self {
+        CountingBloomFilter {
+            filter: HashMap::new(),
+            num_hash_functions,
+            filter_size,
+        }
+    }
+
+    pub fn insert(&mut self, item: String) {
+        let hashes = self.get_hashes(&item);
+        for hash in hashes {
+            *self.filter.entry(hash).or_insert(0) += 1;
+        }
+    }
+
+    pub fn contains(&self, item: &str) -> bool {
+        let hashes = self.get_hashes(item);
+        for hash in hashes {
+            if let Some(&count) = self.filter.get(&hash) {
+                if count <= 0 {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn remove(&mut self, item: &str) {
+        let hashes = self.get_hashes(item);
+        for hash in hashes {
+            if let Some(count) = self.filter.get_mut(&hash) {
+                *count -= 1;
+            }
+        }
+    }
+
+    fn get_hashes(&self, item: &str) -> Vec<String> {
+        let mut hashes = Vec::with_capacity(self.num_hash_functions);
+        for i in 0..self.num_hash_functions {
+            let hash = format!("{}{}", item, i);
+            hashes.push(hash);
+        }
+        hashes
+    }
+}
 #[volo::main]
 async fn main() {
     tracing_subscriber::fmt::init();
+    let mut BLOOM: CountingBloomFilter = CountingBloomFilter::new(3, 19260817);
+
     // ==================Allocate slots to all cluster members
     let mut masters: Vec<SocketAddr> = Vec::with_capacity(SLOTS); // TODO: given by .toml config
 
@@ -234,6 +290,7 @@ async fn main() {
                 if tnum.is_some() {
                     args.push(tnum.unwrap().to_string());
                 }
+                BLOOM.insert(args[0].clone());
                 let resp = hashed_client(&args[0])
                     .get_item(volo_gen::volo::redis::GetItemRequest {
                         cmd: RedisCommand::Set,
@@ -255,6 +312,14 @@ async fn main() {
                 key,
                 transaction_id,
             } => {
+                if !BLOOM.contains(key.as_str()) {
+                    let info = GetItemResponse {
+                        ok: false,
+                        data: Some("(nil)".into()),
+                    };
+                    colored_out(info);
+                    continue;
+                }
                 let resp = hashed_client(key.clone().as_ref())
                     .get_item(volo_gen::volo::redis::GetItemRequest {
                         cmd: RedisCommand::Get,
@@ -276,14 +341,19 @@ async fn main() {
                 let resp = hashed_client(key.clone().as_ref())
                     .get_item(volo_gen::volo::redis::GetItemRequest {
                         cmd: RedisCommand::Del,
-                        args: Some(vec![key.into()]),
+                        args: Some(vec![key.clone().into()]),
                         client_id: None,
                         transaction_id: None,
                     })
                     .await;
                 match resp {
                     Ok(info) => {
-                        colored_out(info);
+                        colored_out(info.clone());
+                        if info.ok {
+                            // delete successfully
+                            // TODO: remove even not fully successful
+                            BLOOM.remove(key.as_str());
+                        }
                         println!("(deleted count)");
                     }
                     Err(e) => tracing::error!("{:?}", e),

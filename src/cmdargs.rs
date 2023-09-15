@@ -46,11 +46,17 @@ pub struct ClientConfig {
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 pub struct ProxyConfig {
-    /// Mark this Vodis instance as a slave
-    #[arg(short, long, value_name = "Master IP:PORT")]
-    pub attach_to: Option<String>,
-
     /// Cluster config file path
     #[arg(long)]
     pub cfg: Option<String>,
+
+    /// Mark this Vodis instance as a slave
+    /// If specified in config file, this can be omitted
+    #[arg(short, long, value_name = "Master IP:PORT")]
+    pub attach_to: Option<String>,
+
+    /// Masters addr!
+    /// If specified in config file, this can be omitted
+    #[arg(long)]
+    pub masters: Option<Vec<String>>,
 }
