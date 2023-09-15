@@ -15,5 +15,8 @@
     read -p $'get 2'
     echo -e "get 2"
     sleep 1
+    read -p $'get 3'
+    echo -e "get 3"
+    sleep 1
 } | (./target/debug/client-cli )
 #| ./target/debug/client-cli

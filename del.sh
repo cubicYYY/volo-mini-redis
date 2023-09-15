@@ -9,14 +9,8 @@
 {
     echo -e "input args: -- -s 127.0.0.1:8080" > /dev/stderr
     read -p ''
-    read -p $'set 1 123 ex 2'
-    echo -e "set 1 123 ex 2"
-    sleep 1
-    read -p $'set 2 114514'
-    echo -e "set 2 114514"
-    sleep 1
-    read -p $'set 3 191981'
-    echo -e "set 3 191981"
+    read -p $'del 2'
+    echo -e "del 2"
     sleep 1
 } | (./target/debug/client-cli )
 #| ./target/debug/client-cli
