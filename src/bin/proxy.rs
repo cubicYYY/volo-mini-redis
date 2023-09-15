@@ -175,16 +175,17 @@ impl CountingBloomFilter {
 #[volo::main]
 async fn main() {
     tracing_subscriber::fmt::init();
-    let mut BLOOM: CountingBloomFilter = CountingBloomFilter::new(3, 19260817);
+    let mut bloom_filter: CountingBloomFilter = CountingBloomFilter::new(3, 19260817);
 
     // ==================Allocate slots to all cluster members
     let mut masters: Vec<SocketAddr> = Vec::with_capacity(SLOTS); // TODO: given by .toml config
 
     //--testonly!
-    masters.push(SocketAddr::new(
-        "127.0.0.1".to_string().parse().unwrap(),
-        8888,
-    ));
+    if let Some(masters_cmd) = &CMD_ARGS.masters {
+        for master in masters_cmd.iter() {
+            masters.push(master.parse::<SocketAddr>().unwrap());
+        }
+    }
     //TODO: parse from config
     //--testonly!
 
@@ -290,7 +291,7 @@ async fn main() {
                 if tnum.is_some() {
                     args.push(tnum.unwrap().to_string());
                 }
-                BLOOM.insert(args[0].clone());
+                bloom_filter.insert(args[0].clone());
                 let resp = hashed_client(&args[0])
                     .get_item(volo_gen::volo::redis::GetItemRequest {
                         cmd: RedisCommand::Set,
@@ -312,12 +313,13 @@ async fn main() {
                 key,
                 transaction_id,
             } => {
-                if !BLOOM.contains(key.as_str()) {
+                if !bloom_filter.contains(key.as_str()) {
                     let info = GetItemResponse {
                         ok: false,
                         data: Some("(nil)".into()),
                     };
                     colored_out(info);
+                    info!("(by Bloom)");
                     continue;
                 }
                 let resp = hashed_client(key.clone().as_ref())
@@ -352,7 +354,7 @@ async fn main() {
                         if info.ok {
                             // delete successfully
                             // TODO: remove even not fully successful
-                            BLOOM.remove(key.as_str());
+                            bloom_filter.remove(key.as_str());
                         }
                         println!("(deleted count)");
                     }
