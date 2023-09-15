@@ -69,3 +69,4 @@ cargo run --bin proxy -- --cfg cluster.toml # 挂载到proxy服务器
 
 ![full test](statics/test.png)
 ![subscribe](statics/image.png)
+更多测试结果详见pdf附件:)
