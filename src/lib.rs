@@ -128,6 +128,8 @@ impl S {
                         if msg == "SHUTDOWN".to_string() {
                             flush(&command);
                             command.clear();
+                            info!("shutdown finally");
+                            break;
                         } else {
                             command.push(msg);
                             // 检查是否距上次写入已经过去了 1 秒
