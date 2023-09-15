@@ -289,6 +289,22 @@ impl S {
                 }
             }
             RedisCommand::Get => {
+                let get_transaction_id = _req.transaction_id.clone();
+                if let Some(t_id) = get_transaction_id {
+                    let mut transactions = TRANSACTION_HASHMAP.lock().await;
+                    //check if there is an transaction with the given id
+                    if transactions.contains_key(&t_id.to_string()) {
+                        let mut transaction = transactions.get_mut(&t_id.to_string()).unwrap();
+                        info!("{:?}", &_req);
+                        transaction.commands.push(_req.clone());
+                        return Ok(GetItemResponse {
+                            ok: true,
+                            data: Some("OK".into()),
+                        });
+                    } else {
+                        return Err(anyhow!("Transaction not found"));
+                    }
+                }
                 if _req.args.is_none() {
                     return Err(anyhow!("No arguments given (required)"));
                 }
@@ -309,6 +325,21 @@ impl S {
                 }
             }
             RedisCommand::Set => {
+                let set_transaction_id = _req.transaction_id.clone();
+                if let Some(t_id) = set_transaction_id {
+                    let mut transactions = TRANSACTION_HASHMAP.lock().await;
+                    //check if there is an transaction with the given id
+                    if transactions.contains_key(&t_id.to_string()) {
+                        let mut transaction = transactions.get_mut(&t_id.to_string()).unwrap();
+                        transaction.commands.push(_req.clone());
+                        return Ok(GetItemResponse {
+                            ok: true,
+                            data: Some("OK".into()),
+                        });
+                    } else {
+                        return Err(anyhow!("Transaction not found"));
+                    }
+                }
                 // let mut is_master: bool = false;
                 {
                     let curr_state = self.state.lock().await;
