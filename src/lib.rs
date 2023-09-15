@@ -376,7 +376,7 @@ impl S {
                 let caddr = self.client_addrs.lock().await;
                 println!("propagate to {} clients", caddr.len());
                 for (_, cliaddr) in (*caddr).iter() {
-                    println!("p. to {}.", cliaddr.clone().to_string());
+                    println!("set... to {}.", cliaddr.clone().to_string());
                     let _resp = get_client(cliaddr.clone())
                         .get_item(volo_gen::volo::redis::GetItemRequest {
                             cmd: RedisCommand::Set,
@@ -393,6 +393,19 @@ impl S {
                 })
             }
             RedisCommand::Del => {
+                {
+                    let curr_state = self.state.lock().await;
+                    if let RedisState::SlaveOf(_, _) = *curr_state {
+                        if _req.client_id.is_none() {
+                            return Err(anyhow!(
+                                "Del is forbidden on slave node if no uuid provided."
+                            ));
+                        }
+                    }
+                    // if let RedisState::Master = *curr_state {
+                    //     is_master = true;
+                    // }
+                }
                 if _req.args.is_none() {
                     return Err(anyhow!("No arguments given (required)"));
                 }
@@ -404,10 +417,25 @@ impl S {
                     ));
                 }
                 let mut success: u16 = 0;
-                for key in arg {
+                for key in arg.iter() {
                     success += REDIS.lock().await.del(key.as_ref()) as u16;
                     let command_str = format!("DEL {:} 0 0\n", key);
                     self.send_message(command_str).await;
+                }
+                // propagate to slaves
+                // no need to be master!
+                let caddr = self.client_addrs.lock().await;
+                println!("propagate to {} clients", caddr.len());
+                for (_, cliaddr) in (*caddr).iter() {
+                    println!("del... to {}.", cliaddr.clone().to_string());
+                    let _resp = get_client(cliaddr.clone())
+                        .get_item(volo_gen::volo::redis::GetItemRequest {
+                            cmd: RedisCommand::Del,
+                            args: Some(arg.clone()),
+                            client_id: Some((*self.uuid.lock().await).to_string().into()), // Not Forwarded
+                            transaction_id: _req.transaction_id.clone(), // Forwarded
+                        })
+                        .await;
                 }
                 Ok(GetItemResponse {
                     ok: true,

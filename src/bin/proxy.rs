@@ -6,11 +6,11 @@ use mini_redis::{AsciiFilterLayer, TimedLayer};
 use pilota::FastStr;
 use rustyline::{error::ReadlineError, DefaultEditor};
 use shell_words::split;
-use tracing::info;
 use std::collections::hash_map::DefaultHasher;
-use std::{net::SocketAddr, thread, time::Duration};
-use volo_gen::volo::redis::{GetItemResponse, RedisCommand};
 use std::hash::{Hash, Hasher};
+use std::{net::SocketAddr, thread, time::Duration};
+use tracing::info;
+use volo_gen::volo::redis::{GetItemResponse, RedisCommand};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -116,9 +116,7 @@ async fn subscribe(handle: String) -> ! {
     }
 }
 const SLOTS: usize = 16384;
-struct CountingBloom {
-    
-}
+struct CountingBloom {}
 
 #[volo::main]
 async fn main() {
@@ -131,11 +129,11 @@ async fn main() {
         "127.0.0.1".to_string().parse().unwrap(),
         8888,
     ));
-     //TODO: parse from config
+    //TODO: parse from config
     //--testonly!
 
     let mut slot_belong: Vec<usize> = Vec::with_capacity(SLOTS); // node (that this slot belongs to) id in `masters`
-    
+
     if masters.len() == 0 {
         panic!("Empty cluster!");
     }
@@ -153,7 +151,7 @@ async fn main() {
         info!("proxyed to {}.", masters[id].to_string());
         get_client(masters[id])
     };
-    
+
     // ==================
 
     let mut state: String = "cluster:proxy".into();
