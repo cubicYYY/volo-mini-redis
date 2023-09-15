@@ -63,8 +63,8 @@ get a
 ```
 Cluster Proxy：
 ```shell
-cargo run --bin server -- -i 127.0.0.1 -p 8080 # 8080
-cargo run --bin server -- -i 127.0.0.1 -p 8888 # 默认转发：8888
+cargo run --bin server -- -i 127.0.0.1 -p 8080 --name main # 8080
+cargo run --bin server -- -i 127.0.0.1 -p 8888 --name proxy # 默认转发：8888
 cargo run --bin proxy -- -a 127.0.0.1:8080 --masters 127.0.0.1:8888 # 挂载到proxy服务器并通过命令行设置masters
 # cluster配置文件默认cluster.toml
 cargo run --bin proxy -- --cfg cluster.toml # 挂载到proxy服务器
